@@ -20,9 +20,6 @@ from .sync.runners_sync import push_cycle_to_wfm  # WFM push (Oqim C)
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Ежедневная синхронизация с Sheets
-# =============================================================================
 
 @shared_task(name="hourly_locks.sync_groups")
 def sync_groups_task():
@@ -89,15 +86,11 @@ def verify_otrabotka_task(target_date_iso: str = None):
 
 @shared_task(name="hourly_locks.auto_close_cycle")
 def auto_close_cycle_task():
-    """
-    Ручной/резервный запуск ролловера цикла (штатно его делает дневной конвейер,
-    шаг 12). Самовосстанавливается: закрывает ВСЕ истёкшие циклы и открывает
-    актуальный, затем пушит в WFM. Безопасно вызывать в любой день.
-    """
+
     logger.info("[auto_close_cycle_task] Старт")
     result = cycle_service.ensure_active_cycle()
 
-    # WFM ga push (yangi aktiv cikl + master data; cikl statuslari yangilanadi)
+
     try:
         push_cycle_to_wfm()
     except Exception as exc:

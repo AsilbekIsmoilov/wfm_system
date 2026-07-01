@@ -50,7 +50,7 @@ class ApplyRequestView(APIView):
 
     def post(self, request):
         data = request.data
-        category = data.get("category")  # 'compensation' | 'transfer'
+        category = data.get("category") 
         correlation_id = data.get("correlation_id")
         operator_ext = data.get("operator_external_id")
         type_rule_code = data.get("type_rule_code")
@@ -88,8 +88,10 @@ class ApplyRequestView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-    # --- Compensation: create + (if auto_approve_on_create) verify immediately ---
     def _apply_compensation(self, data, operator, rule, cycle, correlation_id):
+        related_debts = data.get("related_debts") or []
+        auto_sum = data.get("auto_sum", True)
+
         comp = Compensation.objects.create(
             operator=operator,
             cycle=cycle,
@@ -101,6 +103,14 @@ class ApplyRequestView(APIView):
             status="pending",
             correlation_id=correlation_id,
         )
+
+
+        if related_debts:
+            from hourly_locks.services.compensation_verifier import link_selected_debts
+            total = link_selected_debts(comp, related_debts, cycle)
+            if auto_sum and total > timedelta(0):
+                comp.requested_duration = total
+                comp.save(update_fields=["requested_duration", "updated_at"])
 
         # Immediate types (exception, sl, wc, study, vacation, no_compensation) -> verify now.
         # Deferred types (compensation, nb_compensation, partial_exception) -> runner handles.

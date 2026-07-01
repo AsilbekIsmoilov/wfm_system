@@ -184,16 +184,14 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
+
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
-# Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
+
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -252,8 +250,7 @@ LOGGING = {
             "propagate": False,
         },
 
-        # 5xx-ошибки (необработанные исключения вьюх) — в stdout, чтобы
-        # traceback был виден в `docker compose logs web` даже при DEBUG=0.
+
         "django.request": {
             "handlers": ["console"],
             "level": "ERROR",
@@ -274,8 +271,7 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Tashkent'
 
 
-# Путь к service-account ключу Google (creds.json).
-# В Docker монтируется в /app/creds.json; по умолчанию берём из BASE_DIR.
+
 GOOGLE_CREDENTIAL_PATH = os.environ.get(
     "GOOGLE_CREDENTIAL_PATH",
     str(BASE_DIR / "creds.json"),
