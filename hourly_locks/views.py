@@ -5,6 +5,7 @@ DRF-ViewSet'ы и APIView для hourly_locks.
 import logging
 from datetime import date, datetime, timedelta
 
+from django.conf import settings
 from django.db.models import Q
 from django.utils.timezone import now
 from django_filters.rest_framework import DjangoFilterBackend
@@ -1075,23 +1076,48 @@ class EventLogViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ["-timestamp"]
 
 
+def _as_bool(value) -> bool:
+    """Разбор булева из query/body ('1','true','yes' -> True)."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 class RunDailyPipelineView(APIView):
     """Ручной запуск ежедневного конвейера (daily_runner.run) через Celery.
 
-    POST /api/v1/run-daily-pipeline/
-        body (необязательно):
-          {"date": "YYYY-MM-DD", "skip_sheets": false}
-        По умолчанию — за вчера (как штатный прогон).
+    Дёргать можно ПРОСТО ИЗ БРАУЗЕРА (GET), передав секрет в query:
+      GET /api/v1/run-daily-pipeline/?token=<SYNC_SERVICE_TOKEN>
+      GET /api/v1/run-daily-pipeline/?token=<...>&date=YYYY-MM-DD&skip_sheets=1
 
-    Задача уходит в Celery-воркер (не блокирует HTTP), логи — в логах воркера.
-    Возвращает id задачи. Доступ: только admin/manager.
+    Или как обычно (POST + JWT admin/manager):
+      POST /api/v1/run-daily-pipeline/  {"date": "...", "skip_sheets": false}
+
+    По умолчанию — за вчера. Задача уходит в Celery-воркер (не блокирует HTTP),
+    логи — в логах воркера. Возвращает id задачи.
     """
-    permission_classes = [IsManagerOrAdmin]
+    permission_classes = [permissions.AllowAny]  # доступ по ?token= ИЛИ admin/manager
 
-    def post(self, request):
-        from .tasks import daily_pipeline_task
+    def _authorized(self, request) -> bool:
+        # 1) секрет в query — чтобы дёргать прямо из адресной строки браузера
+        token = request.query_params.get("token")
+        if token and token == settings.SYNC_SERVICE_TOKEN:
+            return True
+        # 2) или залогиненный admin/manager
+        u = request.user
+        return bool(
+            u and u.is_authenticated
+            and getattr(u, "role", None) in ("admin", "manager")
+        )
 
-        raw_date = request.data.get("date")
+    def _run(self, request):
+        if not self._authorized(request):
+            return Response(
+                {"detail": "Ruxsat yo'q. Kerak: ?token=<SYNC_SERVICE_TOKEN> yoki admin/manager JWT."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        raw_date = request.query_params.get("date") or request.data.get("date")
         target_iso = None
         if raw_date:
             try:
@@ -1101,8 +1127,11 @@ class RunDailyPipelineView(APIView):
                     {"detail": "Noto'g'ri date format (kerak: YYYY-MM-DD)"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-        skip_sheets = bool(request.data.get("skip_sheets", False))
+        skip_sheets = _as_bool(
+            request.query_params.get("skip_sheets", request.data.get("skip_sheets", False))
+        )
 
+        from .tasks import daily_pipeline_task
         async_result = daily_pipeline_task.delay(
             target_date_iso=target_iso,
             skip_sheets=skip_sheets,
@@ -1116,3 +1145,9 @@ class RunDailyPipelineView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+    def get(self, request):
+        return self._run(request)
+
+    def post(self, request):
+        return self._run(request)
