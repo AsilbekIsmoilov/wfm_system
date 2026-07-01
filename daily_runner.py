@@ -80,19 +80,42 @@ def _step(result: dict, key: str, title: str, fn):
     return result[key]
 
 
+# Окно синхронизации графика: только со 2-го по 22-е число месяца включительно.
+# Вне окна (23-е … 1-е след. месяца) график НЕ обновляется — работает по
+# последнему обновлению 22-го числа (как в старой системе).
+GRAFIK_SYNC_START_DAY = 2
+GRAFIK_SYNC_END_DAY = 22
+
+
+def _in_grafik_window(day: date) -> bool:
+    return GRAFIK_SYNC_START_DAY <= day.day <= GRAFIK_SYNC_END_DAY
+
+
 def run(target_date: date, skip_sheets: bool = False) -> dict:
     """ЕДИНЫЙ ежедневный прогон за target_date. Вызывается и beat'ом, и вручную."""
     result = {"target_date": str(target_date)}
     section(f"DAILY RUNNER za {target_date}")
 
-    # 1. График (Google Sheets: группы + расписание)
-    if not skip_sheets:
+    # 1. График (Google Sheets: группы + расписание) — ТОЛЬКО в окне 2–22 числа.
+    #    Вне окна график заморожен (последнее обновление 22-го). Окно проверяем
+    #    по РЕАЛЬНОМУ сегодня (localdate), а не по target_date.
+    run_day = localdate()
+    if skip_sheets:
+        logger.info("Sheets sync o'tkazib yuborildi (--skip-sheets)")
+        result["grafik_sync"] = "skipped_flag"
+    elif not _in_grafik_window(run_day):
+        logger.info(
+            "Grafik sync o'tkazib yuborildi: bugun %s (%d-son) — %d–%d oynasidan "
+            "tashqarida; grafik %d-sanadagi oxirgi holatda qotgan.",
+            run_day, run_day.day,
+            GRAFIK_SYNC_START_DAY, GRAFIK_SYNC_END_DAY, GRAFIK_SYNC_END_DAY,
+        )
+        result["grafik_sync"] = "skipped_out_of_window"
+    else:
         _step(result, "sync_groups", "1. Grafik: guruhlar (Sheets)",
               sheets_sync.sync_groups_from_sheets)
         _step(result, "sync_schedules", "1. Grafik: jadval (Sheets)",
               sheets_sync.sync_schedules_from_sheets)
-    else:
-        logger.info("Sheets sync o'tkazib yuborildi (--skip-sheets)")
 
     # 2. Проверка готовности API — если не готов, конвейер останавливается
     section("2. API integrity tekshirish")
