@@ -22,8 +22,7 @@ app.conf.beat_schedule = {
         "task": "hourly_locks.daily_pipeline",
         "schedule": crontab(hour=9, minute=0),
     },
-    # Резерв: ролловер цикла штатно делает дневной конвейер (daily_runner шаг 12);
-    # эта задача — подстраховка на 20-е, если дневной прогон в тот день не прошёл.
+
     "monthly-close": {
         "task": "hourly_locks.auto_close_cycle",
         "schedule": crontab(hour=23, minute=30, day_of_month=20),

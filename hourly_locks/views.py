@@ -1130,12 +1130,45 @@ class RunDailyPipelineView(APIView):
         skip_sheets = _as_bool(
             request.query_params.get("skip_sheets", request.data.get("skip_sheets", False))
         )
-
-        from .tasks import daily_pipeline_task
-        async_result = daily_pipeline_task.delay(
-            target_date_iso=target_iso,
-            skip_sheets=skip_sheets,
+        run_sync = _as_bool(
+            request.query_params.get("sync", request.data.get("sync", False))
         )
+
+        # --- Sinxron rejim (?sync=1): Celery'siz, inline. Local uchun. HTTP'ni bloklaydi. ---
+        if run_sync:
+            from django.utils.timezone import localdate
+            from daily_runner import run as run_daily
+            target_date = (
+                date.fromisoformat(target_iso) if target_iso
+                else localdate() - timedelta(days=1)
+            )
+            result = run_daily(target_date, skip_sheets=skip_sheets)
+            return Response(
+                {
+                    "detail": "Daily pipeline sinxron bajarildi (inline)",
+                    "target_date": str(target_date),
+                    "skip_sheets": skip_sheets,
+                    "result": result,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # --- Async rejim (default): Celery worker'ga uzatadi ---
+        from .tasks import daily_pipeline_task
+        try:
+            async_result = daily_pipeline_task.delay(
+                target_date_iso=target_iso,
+                skip_sheets=skip_sheets,
+            )
+        except Exception as exc:  # broker (Redis) ishlamayotgan bo'lsa
+            return Response(
+                {
+                    "detail": "Celery broker'ga ulanib bo'lmadi. Local uchun ?sync=1 ishlating "
+                              "yoki Redis + Celery worker'ni ishga tushiring.",
+                    "error": str(exc),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response(
             {
                 "detail": "Daily pipeline ishga tushirildi (Celery)",
