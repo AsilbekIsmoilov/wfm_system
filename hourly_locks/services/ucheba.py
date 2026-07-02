@@ -139,9 +139,17 @@ def _validate_common(days, hour_from, hour_to):
     days = _normalize_days(days)
     if not days:
         raise UchebaError("Не выбран ни один день.", code="no_days")
-    for d in days:
-        if not cycle.contains(d):
-            raise UchebaError(f"День {d} вне активного цикла.", code="day_out_of_cycle")
+    # ЕДИНАЯ проверка дат: в цикле + не в прошлом (ретро для учёбы нет).
+    from .cycle import check_request_days
+    bad = check_request_days(days, allow_past=False, cycle=cycle)
+    if bad:
+        b = bad[0]
+        if b["code"] == "out_of_cycle":
+            raise UchebaError(f"День {b['day']} вне активного цикла ({b['cycle']}).",
+                              code="day_out_of_cycle", payload={"violations": bad})
+        raise UchebaError(
+            f"Заявку на прошедший день ({b['day']}) подать нельзя.",
+            code="day_in_past", payload={"violations": bad})
     return {"cycle": cycle, "rule": rule, "days": days,
             "hour_from": hour_from, "hour_to": hour_to, "window": window}
 
@@ -283,22 +291,25 @@ def verify_ucheba_day(uday) -> dict:
     debt = debt_full + debt_lock
     work_hours = max(full - lock, Z)
 
-    # откат прошлого долга этого дня учёбы (идемпотентность)
-    WorkDebtDetail.objects.filter(
-        source="ucheba", source_object_id=tr.id, day=day).delete()
-
+    # Идемпотентность БЕЗ churn: update_or_create — external_id (identity) barqaror
+    # qoladi (delete+create har run yangi PK yasar edi → WFM'da dublikat).
     if debt > Z:
-        WorkDebtDetail.objects.create(
-            operator=op, day=day, cycle=cycle, source="ucheba",
-            source_object_id=tr.id, violation_type=vtype,
-            shift=shift, shift_code_snapshot=(shift.code if shift else None),
-            norm_full=norm_full, fact_full=full,
-            debt_full=debt_full, norm_lock=norm_lock, fact_lock=lock,
-            debt_lock=debt_lock,
-            note=(f"Учёба #{tr.id} за {day} (расш. окно).\n{calc_note}"),
+        WorkDebtDetail.objects.update_or_create(
+            source="ucheba", source_object_id=tr.id, day=day,
+            defaults=dict(
+                operator=op, cycle=cycle, violation_type=vtype,
+                shift=shift, shift_code_snapshot=(shift.code if shift else None),
+                norm_full=norm_full, fact_full=full,
+                debt_full=debt_full, norm_lock=norm_lock, fact_lock=lock,
+                debt_lock=debt_lock,
+                note=(f"Учёба #{tr.id} за {day} (расш. окно).\n{calc_note}"),
+            ),
         )
         status = "partial" if work_hours > Z else "declined"
     else:
+        # долга нет → прежнюю запись удаляем (этот delete нужно синхронизировать в WFM).
+        WorkDebtDetail.objects.filter(
+            source="ucheba", source_object_id=tr.id, day=day).delete()
         status = "approved"
 
     uday.fact_full = full; uday.fact_lock = lock; uday.debt = debt

@@ -350,37 +350,40 @@ def _create_debt_record(log: WorkLogDaily, operator: Operator, cycle):
         )
         return
 
-    # 1. Eski yozuvlarni o'chiramiz (locked emas)
-    WorkDebtDetail.objects.filter(
-        operator=operator,
-        day=log.day,
-        source="shift",
-        shift=log.shift,
-    ).delete()
-
-    # 2. Yangi qarz hisoblash
+    # 1. Yangi qarz hisoblash
     result = check_debt_for_log(log)
     debt_value = result["debt_full"] + result["debt_lock"]
 
+    # 2a. Qarz yo'q → "bu kun qarzi" entity endi mavjud emas: eski (locked bo'lmagan)
+    #     yozuvni o'chiramiz. Bu delete WFM'ga alohida sync qilinishi kerak (delete-sync).
     if debt_value <= timedelta(0):
+        WorkDebtDetail.objects.filter(
+            operator=operator, day=log.day, source="shift", shift=log.shift,
+            locked_for_compensation=False,
+        ).delete()
         return
 
-    WorkDebtDetail.objects.create(
+    # 2b. update_or_create — external_id (identity) BARQAROR qoladi.
+    #     Ilgari delete+create har run YANGI PK yasar edi → WFM upsert'da eski PK
+    #     orphan bo'lib to'planardi (bir WDD → N dublikat). Endi o'sha yozuv yangilanadi.
+    WorkDebtDetail.objects.update_or_create(
         operator=operator,
         day=log.day,
-        cycle=cycle,
         source="shift",
         shift=log.shift,
-        shift_code_snapshot=log.shift.code if log.shift else None,
-        violation_type=result["violation_type"],
-        norm_full=result["norm_full"],
-        fact_full=log.full_duration,
-        debt_full=result["debt_full"],
-        norm_lock=result["norm_lock"],
-        fact_lock=log.lock_duration,
-        debt_lock=result["debt_lock"],
-        make_up_wh=result["make_up_wh"],
-        note=result["note"],
+        defaults={
+            "cycle": cycle,
+            "shift_code_snapshot": log.shift.code if log.shift else None,
+            "violation_type": result["violation_type"],
+            "norm_full": result["norm_full"],
+            "fact_full": log.full_duration,
+            "debt_full": result["debt_full"],
+            "norm_lock": result["norm_lock"],
+            "fact_lock": log.lock_duration,
+            "debt_lock": result["debt_lock"],
+            "make_up_wh": result["make_up_wh"],
+            "note": result["note"],
+        },
     )
 
 

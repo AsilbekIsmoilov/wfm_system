@@ -1132,6 +1132,16 @@ class Compensation(BaseWorkRequest):
                     ),
                 })
 
+        # ЕДИНАЯ: любая заявка — только в пределах активного цикла.
+        if self.planned_date and self._state.adding:
+            cyc = Cycle.get_active()
+            if cyc and not cyc.contains(self.planned_date):
+                raise ValidationError({
+                    "planned_date": (
+                        f"Дата вне активного цикла ({cyc.start_date}–{cyc.end_date})."
+                    ),
+                })
+
         # Ограничения длительности
         if rule.min_duration and self.requested_duration < rule.min_duration:
             raise ValidationError({
@@ -1510,6 +1520,23 @@ class Transfer(BaseWorkRequest):
             raise ValidationError(
                 "Дата начала не может быть позже даты окончания"
             )
+
+        # ЕДИНАЯ: transfer sanalari — aktiv sikl ichida + past emas (transferda retro yo'q).
+        if self.date_from and self._state.adding:
+            from .services.cycle import check_request_days
+            span, d = [], self.date_from
+            end = self.date_to or self.date_from
+            while d <= end:
+                span.append(d)
+                d += timedelta(days=1)
+            bad = check_request_days(span, allow_past=False)
+            if bad:
+                b = bad[0]
+                if b["code"] == "out_of_cycle":
+                    raise ValidationError({"date_from": (
+                        f"Дата {b['day']} вне активного цикла ({b['cycle']}).")})
+                raise ValidationError({"date_from": (
+                    f"Заявку на прошедшую дату ({b['day']}) подать нельзя.")})
 
         if rule.min_duration and self.requested_duration and self.requested_duration < rule.min_duration:
             raise ValidationError({

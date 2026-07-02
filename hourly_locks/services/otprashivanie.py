@@ -141,6 +141,10 @@ def _validate_common(leave_days, hour_from, hour_to, workoff_days):
         if not cycle.contains(d):
             raise OtprashivanieError(
                 f"День отгула {d} вне активного цикла.", code="leave_out_of_cycle")
+        if d < today:
+            raise OtprashivanieError(
+                f"Заявку на прошедший день отгула ({d}) подать нельзя.",
+                code="leave_in_past")
     for d in workoff_days:
         if not cycle.contains(d):
             raise OtprashivanieError(

@@ -75,6 +75,15 @@ def push(entity, items):
     return _post(f"sync/ingest/{entity}", items)
 
 
+def reconcile(entity, body):
+    """
+    Delete-sync/prune: WFM'da berilgan scope ichida `external_ids` ro'yxatida
+    BO'LMAGAN yozuvlarni o'chiradi (POST /sync/reconcile/<entity>).
+    body: {"external_ids": [...], "cycle_id": <id>} yoki {"compensation_ids": [...]}.
+    """
+    return _post(f"sync/reconcile/{entity}", body)
+
+
 def push_request_results(items):
     """
     items: list of dicts like

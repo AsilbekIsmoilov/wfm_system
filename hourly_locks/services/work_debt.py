@@ -5,9 +5,15 @@ Manba:
   - WorkDebtDetail (shortfall'lardan tashqari) — jami qarz
   - CompensationDebtLink (applied=True) — qoplangan kredit
 
-Hisob:
-  total_accumulated = sum(WDD.debt) [shortfall'lardan tashqari]
-  current_debt      = max(total_accumulated - sum(applied_credit), 0)
+Hisob (variant A — locked WDD qayta sanalmaydi, double-count yo'q):
+  total_accumulated = sum(WDD.debt) [shortfall + compensation_remainder'dan tashqari]
+                      → valovaya (yig'ilgan) qarz, faqat PRIMARY yozuvlar.
+  current_debt      = sum(WDD.debt) [shortfall'dan tashqari, locked_for_compensation=False]
+                      → OCHIQ qarz (ochiq remainderlar ham kiradi).
+
+Sabab: kompensatsiya qarzni qoplaganda asl WDD locked bo'ladi + qoplanmagan
+qism uchun compensation_remainder yaratiladi. Ilgari total_accum ikkalasini ham
+qo'shar edi (double). Endi: accumulated — primary'lar, current — faqat ochiqlar.
 """
 
 import logging
@@ -26,15 +32,24 @@ from hourly_locks.models import (
 logger = logging.getLogger(__name__)
 
 SHORTFALL_SOURCES = {"compensation_shortfall", "nb_compensation_shortfall"}
+REMAINDER_SOURCE = "compensation_remainder"
 
 
 def recompute_for_operator(operator, cycle) -> tuple:
-    total_accum = timedelta(0)
+    gross_all = timedelta(0)     # current uchun: BARCHA qarz (remainder ham)
+    total_accum = timedelta(0)   # accumulated: faqat PRIMARY (remainder — hosila, chetlanadi)
     for wdd in WorkDebtDetail.objects.filter(
         operator=operator, cycle=cycle,
     ).exclude(source__in=SHORTFALL_SOURCES):
-        total_accum += (wdd.debt_full or timedelta(0)) + (wdd.debt_lock or timedelta(0))
+        d = (wdd.debt_full or timedelta(0)) + (wdd.debt_lock or timedelta(0))
+        gross_all += d
+        # accumulated: remainder — asl qarzning bir qismi (hosila), qayta sanamaymiz
+        # (aks holda locked asl + remainder = double-count).
+        if wdd.source != REMAINDER_SOURCE:
+            total_accum += d
 
+    # current: applied (haqiqatan qoplangan) kreditni ayiramiz. Otrabotka LOCK
+    # qilsa-da applied=False bo'lgani uchun verify bo'lguncha current kamaymaydi.
     total_applied = timedelta(0)
     for link in CompensationDebtLink.objects.filter(
         compensation__operator=operator,
@@ -43,7 +58,7 @@ def recompute_for_operator(operator, cycle) -> tuple:
     ):
         total_applied += link.applied_amount or timedelta(0)
 
-    new_current = max(total_accum - total_applied, timedelta(0))
+    new_current = max(gross_all - total_applied, timedelta(0))
 
     with transaction.atomic():
         wd, _ = WorkDebt.objects.select_for_update().get_or_create(

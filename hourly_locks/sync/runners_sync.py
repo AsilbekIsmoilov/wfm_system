@@ -66,6 +66,25 @@ def _push(entity, items):
     return len(items)
 
 
+def _reconcile(entity, qs, cycle_id=None, compensation_ids=None):
+    """
+    Delete-sync: WFM'ga bu scope uchun Django'dagi JORIY external_id ro'yxatini
+    yuboradi; WFM ro'yxatda yo'q yozuvlarni prune qiladi (churn-orphan + haqiqiy
+    delete + arxiv). To'liq ro'yxat yuborilishi shart — shuning uchun watermark'ga
+    bog'liq emas. Xato bo'lsa pipeline'ni buzmaydi (log + davom).
+    """
+    body = {"external_ids": list(qs.values_list("id", flat=True))}
+    if cycle_id is not None:
+        body["cycle_id"] = cycle_id
+    if compensation_ids is not None:
+        body["compensation_ids"] = list(compensation_ids)
+    try:
+        return wfm_client.reconcile(entity, body)
+    except Exception as exc:  # WFM o'chgan bo'lsa ham runner davom etsin
+        logger.warning("WFM reconcile(%s) xato: %s", entity, exc)
+        return None
+
+
 def _ser_group(g):
     return {"external_id": g.id, "name": g.name, "supervisor_id": g.supervisor_id, "is_active": g.is_active}
 
@@ -204,6 +223,21 @@ def push_cycle_to_wfm(cycle=None, include_master=True, full=False) -> dict:
         "compensation-debt-links",
         [_ser_debt_link(x) for x in _since_filter(CompensationDebtLink.objects.filter(compensation__cycle=cycle), since)],
     )
+
+    # Delete-sync (reconcile): WFM'da bu sikl uchun Django'da endi mavjud bo'lmagan
+    # yozuvlarni prune qilamiz. Bu upsert-only push qoldirgan orphanlarni (delete+
+    # create churn'idan qolgan eski PK'lar + haqiqiy o'chirilganlar) tozalaydi.
+    comp_ids = list(Compensation.objects.filter(cycle=cycle).values_list("id", flat=True))
+    out["reconcile"] = {
+        "work-debts": _reconcile("work-debts", WorkDebt.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "work-debt-details": _reconcile("work-debt-details", WorkDebtDetail.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "compensations": _reconcile("compensations", Compensation.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "transfers": _reconcile("transfers", Transfer.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "compensation-debt-links": _reconcile(
+            "compensation-debt-links",
+            CompensationDebtLink.objects.filter(compensation__cycle=cycle),
+            compensation_ids=comp_ids),
+    }
 
     _save_watermark(started_at)  # keyingi push shu vaqtdan boshlaydi
     logger.info("WFM push (cycle %s, since=%s): %s", cycle.id, since, out)

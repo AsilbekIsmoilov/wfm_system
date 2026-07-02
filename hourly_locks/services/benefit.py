@@ -133,10 +133,17 @@ def _validate_common(code, subtype, days, hour_from, hour_to):
     days = _normalize_days(days)
     if not days:
         raise BenefitError("Не выбран ни один день.", code="no_days")
-    for d in days:
-        if not cycle.contains(d):
-            raise BenefitError(
-                f"День {d} вне активного цикла.", code="day_out_of_cycle")
+    # ЕДИНАЯ проверка дат: в цикле + не в прошлом (ретро для льгот нет).
+    from .cycle import check_request_days
+    bad = check_request_days(days, allow_past=False, cycle=cycle)
+    if bad:
+        b = bad[0]
+        if b["code"] == "out_of_cycle":
+            raise BenefitError(f"День {b['day']} вне активного цикла ({b['cycle']}).",
+                               code="day_out_of_cycle", payload={"violations": bad})
+        raise BenefitError(
+            f"Заявку на прошедший день ({b['day']}) подать нельзя.",
+            code="day_in_past", payload={"violations": bad})
 
     # подтип — только для «Прочие льготы»
     if code == "lgota_prochie":
