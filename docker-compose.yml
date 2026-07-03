@@ -64,7 +64,7 @@ services:
     environment:
       <<: *app-env
     volumes:
-      - ./creds.json:/app/creds.json:ro
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
     depends_on:
       - db
       - redis
@@ -76,7 +76,7 @@ services:
     environment:
       <<: *app-env
     volumes:
-      - ./creds.json:/app/creds.json:ro
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
     depends_on:
       - db
       - redis
