@@ -46,7 +46,7 @@ services:
       <<: *app-env
       RUN_MIGRATIONS: "1"
     volumes:
-      - ./creds.json:/app/creds.json:ro
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
       - static_volume:/app/staticfiles
       - media_volume:/app/media
     depends_on:
@@ -64,7 +64,7 @@ services:
     environment:
       <<: *app-env
     volumes:
-      - ./creds.json:/app/creds.json:ro
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
     depends_on:
       - db
       - redis
@@ -76,7 +76,7 @@ services:
     environment:
       <<: *app-env
     volumes:
-      - ./creds.json:/app/creds.json:ro
+      - /home/user/Projects/wc_system/creds.json:/app/creds.json:ro
     depends_on:
       - db
       - redis
