@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Attendance — Live</title>
+<style>
+  *{box-sizing:border-box} body{font-family:system-ui,Arial,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+  header{background:#1e293b;padding:12px 18px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:5;border-bottom:1px solid #334155}
+  header h1{font-size:16px;margin:0;margin-right:auto}
+  .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+  .dot.on{background:#4ade80} .dot.off{background:#f87171}
+  input,select{background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:7px 9px;font:inherit}
+  .muted{color:#64748b;font-size:12px}
+  .summary{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px}
+  .chip{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:6px 14px;font-size:13px;cursor:pointer;user-select:none}
+  .chip.active{outline:2px solid #60a5fa}
+  .chip b{font-size:15px;margin-left:6px}
+  .c-on_time b{color:#4ade80} .c-late b{color:#fb923c} .c-lating b{color:#facc15}
+  .c-absent b{color:#f87171} .c-wait b{color:#94a3b8} .c-all b{color:#e2e8f0}
+  .wrap{padding:0 18px 24px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1e293b;white-space:nowrap}
+  th{position:sticky;top:96px;background:#0f172a;color:#94a3b8;font-weight:600;cursor:pointer}
+  tr:hover td{background:#0b1220}
+  .badge{padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600}
+  .b-on_time{background:#14532d;color:#4ade80} .b-late{background:#7c2d12;color:#fb923c}
+  .b-lating{background:#713f12;color:#facc15} .b-absent{background:#7f1d1d;color:#f87171}
+  .b-wait{background:#1e293b;color:#94a3b8}
+  .delay{color:#fb923c}
+</style>
+</head>
+<body>
+<header>
+  <h1>👥 Attendance — Live</h1>
+  <span id="conn" class="muted"><span class="dot off"></span>disconnected</span>
+  <span id="upd" class="muted">—</span>
+  <input id="q" placeholder="search name / login" size="20"/>
+  <select id="grp"><option value="">— all groups —</option></select>
+  <select id="sched"><option value="">— all schedules —</option></select>
+</header>
+
+<div class="summary" id="summary"></div>
+
+<div class="wrap">
+  <table>
+    <thead><tr>
+      <th data-s="login">Login</th><th data-s="name">Name</th><th data-s="group">Group</th>
+      <th data-s="schedule">Schedule</th><th data-s="scheduled_start">Start</th>
+      <th data-s="status">Status</th><th data-s="login_time">Login time</th><th data-s="delay_minutes">Delay</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="muted" style="padding:20px;text-align:center">Waiting for data...</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const LABELS = {on_time:"On time", late:"Late", lating:"Arriving late", absent:"Absent", wait:"Waiting"};
+const ORDER = ["on_time","late","lating","absent","wait"];
+let DATA = [];            // last snapshot
+let filterStatus = "";    // chip filter
+let sortKey = "name", sortDir = 1;
+
+function statusKey(s){ return s ? s : "wait"; }   // null -> "wait"
+
+function render(){
+  const q = $("q").value.toLowerCase().trim();
+  const grp = $("grp").value;
+  const sched = $("sched").value;
+
+  // refresh group dropdown
+  const groups = [...new Set(DATA.map(d => d.group && d.group.name).filter(Boolean))].sort();
+  const cur = $("grp").value;
+  if ($("grp").options.length - 1 !== groups.length){
+    $("grp").innerHTML = '<option value="">— all groups —</option>' + groups.map(g=>`<option>${g}</option>`).join("");
+    $("grp").value = cur;
+  }
+
+  // refresh schedule dropdown
+  const scheds = [...new Set(DATA.map(d => d.schedule).filter(Boolean))].sort((a,b)=>(""+a).localeCompare(""+b, undefined, {numeric:true}));
+  const curS = $("sched").value;
+  if ($("sched").options.length - 1 !== scheds.length){
+    $("sched").innerHTML = '<option value="">— all schedules —</option>' + scheds.map(s=>`<option>${s}</option>`).join("");
+    $("sched").value = curS;
+  }
+
+  // summary
+  const counts = {on_time:0,late:0,lating:0,absent:0,wait:0};
+  DATA.forEach(d => counts[statusKey(d.status)]++);
+  $("summary").innerHTML =
+    `<div class="chip c-all ${filterStatus===''?'active':''}" data-f="">Total <b>${DATA.length}</b></div>` +
+    ORDER.map(k=>`<div class="chip c-${k} ${filterStatus===k?'active':''}" data-f="${k}">${LABELS[k]} <b>${counts[k]}</b></div>`).join("");
+  document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{filterStatus=c.dataset.f;render();});
+
+  // filter + sort
+  let rows = DATA.filter(d=>{
+    if (filterStatus && statusKey(d.status)!==filterStatus) return false;
+    if (grp && !(d.group && d.group.name===grp)) return false;
+    if (sched && d.schedule!==sched) return false;
+    if (q && !((d.name||"").toLowerCase().includes(q) || String(d.login||"").includes(q))) return false;
+    return true;
+  });
+  rows.sort((a,b)=>{
+    let va=a[sortKey], vb=b[sortKey];
+    if (sortKey==="group"){ va=a.group&&a.group.name||""; vb=b.group&&b.group.name||""; }
+    va=va==null?"":va; vb=vb==null?"":vb;
+    return (""+va).localeCompare(""+vb, undefined, {numeric:true})*sortDir;
+  });
+
+  $("rows").innerHTML = rows.map(d=>{
+    const sk = statusKey(d.status);
+    return `<tr>
+      <td>${d.login||""}</td>
+      <td>${d.name||""}</td>
+      <td>${d.group?d.group.name:"—"}</td>
+      <td>${d.schedule||""}</td>
+      <td>${d.scheduled_start||""}</td>
+      <td><span class="badge b-${sk}">${LABELS[sk]}</span></td>
+      <td>${d.login_time||"—"}</td>
+      <td>${d.delay_minutes?('<span class="delay">+'+d.delay_minutes+' min</span>'):"—"}</td>
+    </tr>`;
+  }).join("");
+  $("empty").style.display = rows.length ? "none" : "block";
+  $("empty").textContent = DATA.length ? "No matching records" : "Waiting for data...";
+}
+
+document.querySelectorAll("th").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.s; if(sortKey===k) sortDir*=-1; else {sortKey=k; sortDir=1;} render();
+});
+$("q").oninput = render;
+$("grp").onchange = render;
+$("sched").onchange = render;
+
+// ---- WebSocket ----
+let ws;
+function connect(){
+  const proto = location.protocol === "https:" ? "wss://" : "ws://";
+  const url = proto + location.host + "/ws/attendance/";
+  ws = new WebSocket(url);
+  ws.onopen = ()=>{ $("conn").innerHTML = '<span class="dot on"></span>connected'; };
+  ws.onmessage = e=>{
+    try{ DATA = JSON.parse(e.data)||[]; }catch(_){ DATA=[]; }
+    const t = new Date();
+    $("upd").textContent = "updated: " + t.toLocaleTimeString() + " · " + DATA.length;
+    render();
+  };
+  ws.onclose = ()=>{ $("conn").innerHTML = '<span class="dot off"></span>disconnected, reconnecting...'; setTimeout(connect, 3000); };
+  ws.onerror = ()=>{ ws.close(); };
+}
+connect();
+render();
+</script>
+</body>
+</html>

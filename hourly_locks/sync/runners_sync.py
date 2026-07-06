@@ -250,3 +250,40 @@ def push_cycle_status(cycle) -> dict:
         return {"pushed": 0}
     wfm_client.push("cycles", [_ser_cycle(cycle)])
     return {"cycle_id": cycle.id, "status": cycle.status}
+
+
+def push_after_apply(operator_ids, cycle) -> dict:
+    """
+    Variant A1: ta'sirlangan operator(lar)ning JORIY to'liq holatini WFM'ga darhol
+    (sinxron) push qiladi — 5 ta model:
+        operator, work-debt (umumiy qarz), work-debt-detail (qarz detali),
+        compensation, transfer  (+ compensation-debt-link).
+    Shunda WFM Mongo darhol yangilanadi va GET'lar zudlik bilan ko'rsatadi.
+
+    CHAQIRILADI: apply-request (accept_*) dan keyin VA WFM->Django upsert/delete
+    (o'sha 5 entity'dan biri) dan keyin. Xato bo'lsa (WFM o'chgan) asosiy amalni
+    buzmaydi — yozuv Django'da bor, keyingi kunlik push baribir sinxronlaydi.
+    """
+    ops = list({int(o) for o in operator_ids})
+    if not ops:
+        return {"pushed": False}
+    # 1) Operator (sikldan mustaqil)
+    out = {
+        "operators": _push("operators", [
+            _ser_operator(x) for x in Operator.objects.filter(id__in=ops)]),
+    }
+    # 2) Sikl-scoped: umumiy qarz, qarz detallari, compensationlar, transferlar, linklar
+    if cycle is not None:
+        out["work-debts"] = _push("work-debts", [
+            _ser_work_debt(x) for x in WorkDebt.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["work-debt-details"] = _push("work-debt-details", [
+            _ser_detail(x) for x in WorkDebtDetail.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["compensations"] = _push("compensations", [
+            _ser_compensation(x) for x in Compensation.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["transfers"] = _push("transfers", [
+            _ser_transfer(x) for x in Transfer.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["compensation-debt-links"] = _push("compensation-debt-links", [
+            _ser_debt_link(x) for x in CompensationDebtLink.objects.filter(
+                compensation__operator_id__in=ops, compensation__cycle=cycle)])
+    logger.info("push_after_apply (operators=%s): %s", ops, out)
+    return out

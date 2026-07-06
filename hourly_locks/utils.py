@@ -22,11 +22,18 @@ def normalize_text(value) -> str:
 
 
 def normalize_fio_for_match(fio: str) -> str:
-    """Нормализация ФИО для сравнения с Google Sheets."""
+    """Нормализация ФИО для сравнения с Google Sheets.
+
+    Все варианты апострофа/тутук белгиси УДАЛЯЮТСЯ (o'g'li / o`g`li / oʻgʻli /
+    ogli — все становятся одинаковыми). Раньше нормализовались только фигурные
+    кавычки, но Django хранил backtick (o`g`li), а Sheets — прямой ' (o'g'li),
+    из-за чего ФИО не совпадали и график не загружался.
+    """
     if not fio:
         return ""
     fio = str(fio).lower().strip()
-    fio = fio.replace("’", "'").replace("‘", "'")
+    for ch in ("'", "`", "’", "‘", "ʻ", "ʼ", "´", "‛", "＇"):
+        fio = fio.replace(ch, "")
     fio = " ".join(fio.split())
     return fio
 

@@ -100,6 +100,28 @@ class ApplyRequestView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        # A1: ariza qabul qilingach, ta'sirlangan operator(lar) holatini WFM'ga
+        # DARHOL push (javob qaytishdan oldin). Xato bo'lsa arizani buzmaydi —
+        # yozuv Django'da bor, keyingi kunlik push baribir sinxronlaydi.
+        try:
+            from hourly_locks.services.cycle import get_active_cycle
+            from hourly_locks.sync.runners_sync import push_after_apply
+            op_ids = set()
+            if result.get("compensation_id"):
+                c = Compensation.objects.filter(id=result["compensation_id"]).first()
+                if c:
+                    op_ids.add(c.operator_id)
+            for tid in (result.get("transfer_ids") or []):
+                t = Transfer.objects.filter(id=tid).first()
+                if t:
+                    op_ids.add(t.operator_id)
+            if op_ids:
+                push_after_apply(op_ids, get_active_cycle())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "apply-request WFM push_after_apply xato: %s", exc)
+
         return Response({"ok": True, **result})
 
     # ------------------------------------------------------------------ #

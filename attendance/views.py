@@ -41,3 +41,19 @@
 #             filtered.append(item)
 #
 #         return Response(filtered)
+
+
+
+from django.shortcuts import render
+from django.views import View
+
+
+class AttendanceTestView(View):
+
+    def get(self, request):
+        return render(request, "attendance_test.html")
+
+
+def board(request):
+    """Jonli davomat board'i (WebSocket ws/attendance/ orqali yangilanadi)."""
+    return render(request, "attendance/board.html")

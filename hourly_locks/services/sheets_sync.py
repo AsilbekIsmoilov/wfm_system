@@ -189,14 +189,6 @@ def sync_schedules_from_sheets(
         "schedule_sheet_2_id",
         "1nFwb28bXa02Vcnnv9ORoDLkbAHFAYP3aDG9hsXiPTLM",
     )
-    group_sheet_1 = get_system_policy(
-        "schedule_sheet_1_groups",
-        ["1000", "1009", "1093", "1170", "1242", "BKM", "INT", "Группа ДОП", "ДОП", "Саралаш", "РФ", "Продажа", "Нукус 1000", "229 (1000)", "БКМ", "БКМ/09", "ДОП 1", "ДОП 2","MVD"],
-    )
-    group_sheet_2 = get_system_policy(
-        "schedule_sheet_2_groups",
-        ["1000", "1009", "1093", "1170", "1242", "BKM", "INT", "Группа ДОП", "ДОП", "Саралаш", "РФ", "Продажа", "Нукус 1000", "229 (1000)", "БКМ", "БКМ/09", "ДОП 1", "ДОП 2","MVD"],
-    )
 
     logger.info(
         "[sheets_sync] Синхронизация расписаний %d/%02d...", year, month,
@@ -221,24 +213,14 @@ def sync_schedules_from_sheets(
     with transaction.atomic():
         for operator in operators:
             try:
-                if not operator.group:
-                    stats["skipped_operators"] += 1
-                    continue
-
-                group_name = str(operator.group.name)
-                if group_name in group_sheet_1:
-                    sheet_dict = dict1
-                elif group_name in group_sheet_2:
-                    sheet_dict = dict2
-                else:
-                    stats["skipped_operators"] += 1
-                    continue
-
                 norm_fio = normalize_fio_for_match(
                     f"{operator.surname} {operator.name} {operator.middle_name or ''}",
                 )
 
-                days_data = sheet_dict.get(norm_fio)
+                # Grafik IKKALA sheetda ham tekshiriladi (group->sheet routing yo'q).
+                # Operator qaysi sheetda bo'lsa ham topiladi — grafikda mavjud
+                # bo'lgan operator skip bo'lib ketmaydi.
+                days_data = dict1.get(norm_fio) or dict2.get(norm_fio)
                 if not days_data:
                     stats["skipped_operators"] += 1
                     continue

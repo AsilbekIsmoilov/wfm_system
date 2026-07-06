@@ -84,6 +84,15 @@ def reconcile(entity, body):
     return _post(f"sync/reconcile/{entity}", body)
 
 
+def push_attendance_live(snapshot):
+    """
+    Attendance jonli snapshotini WFM'ga uzatish (har 10s, faqat ko'rsatish uchun —
+    WFM saqlamaydi, oxirgi holatni xotirada tutib frontga beradi).
+    body: {"fetchedAt": <iso>, "records": [...]} (POST /sync/attendance/live).
+    """
+    return _post("sync/attendance/live", snapshot)
+
+
 def push_request_results(items):
     """
     items: list of dicts like
