@@ -228,7 +228,7 @@ class ApplyRequestView(APIView):
             raise _AsResponse(err)
         ops = self._ops(data["operator_ids"])
         result = accept_otprashivanie(
-            operators=ops, leave_days=data["leave_days"], hour_from=data["hour_from"],
+            operators=ops, leave_days=data["days"], hour_from=data["hour_from"],
             hour_to=data["hour_to"], workoff_days=data["workoff_days"],
             comment=data.get("comment", ""), user=None, source=source,
             pdf_file=data.get("pdf_file"), screens=data.get("screens"),

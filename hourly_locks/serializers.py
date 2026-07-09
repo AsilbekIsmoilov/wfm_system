@@ -550,7 +550,7 @@ class OtprashivanieAcceptSerializer(serializers.Serializer):
     operator_ids = serializers.ListField(
         child=serializers.IntegerField(), allow_empty=False,
     )
-    leave_days = serializers.ListField(
+    days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
     )
     hour_from = serializers.TimeField()

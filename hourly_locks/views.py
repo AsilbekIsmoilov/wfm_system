@@ -800,7 +800,7 @@ class TransferViewSet(viewsets.ModelViewSet):
         try:
             result = preview_otprashivanie(
                 operators=operators,
-                leave_days=data["leave_days"],
+                leave_days=data["days"],
                 hour_from=data["hour_from"],
                 hour_to=data["hour_to"],
                 workoff_days=data["workoff_days"],
@@ -830,7 +830,7 @@ class TransferViewSet(viewsets.ModelViewSet):
         try:
             result = accept_otprashivanie(
                 operators=operators,
-                leave_days=data["leave_days"],
+                leave_days=data["days"],
                 hour_from=data["hour_from"],
                 hour_to=data["hour_to"],
                 workoff_days=data["workoff_days"],

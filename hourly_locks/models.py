@@ -999,7 +999,7 @@ class BaseWorkRequest(models.Model):
         max_length=64,
         null=True,
         blank=True,
-        unique=True,
+        db_index=True,
     )
 
     class Meta:
@@ -1111,6 +1111,16 @@ class Compensation(BaseWorkRequest):
             models.Index(fields=["deducted"]),
             models.Index(fields=["source"]),
             models.Index(fields=["source", "status"]),
+        ]
+        constraints = [
+            # WFM apply-request bitta correlation_id ni bir arizadagi HAR operatorga
+            # yozadi. Yakka unique to'qnashardi; (correlation_id, operator) juftligi
+            # bir operatorga bir correlation_id ni bir marta kafolatlaydi.
+            # MySQL bir nechta NULL correlation_id ga ruxsat beradi (qo'lda yaratilgan).
+            models.UniqueConstraint(
+                fields=["correlation_id", "operator"],
+                name="uq_compensation_corr_operator",
+            ),
         ]
         ordering = ["-planned_date", "-created_at"]
 
@@ -1490,6 +1500,16 @@ class Transfer(BaseWorkRequest):
             models.Index(fields=["status"]),
             models.Index(fields=["cycle", "status"]),
             models.Index(fields=["type_rule", "status"]),
+        ]
+        constraints = [
+            # WFM apply-request bitta correlation_id ni bir arizadagi HAR operatorga
+            # yozadi. Yakka unique to'qnashardi; (correlation_id, operator) juftligi
+            # bir operatorga bir correlation_id ni bir marta kafolatlaydi.
+            # MySQL bir nechta NULL correlation_id ga ruxsat beradi (qo'lda yaratilgan).
+            models.UniqueConstraint(
+                fields=["correlation_id", "operator"],
+                name="uq_transfer_corr_operator",
+            ),
         ]
         ordering = ["-date_from", "-created_at"]
 
