@@ -1,0 +1,187 @@
+"""
+Редактирование ПРИНЯТОЙ заявки-компенсации без смены PK (стабильный external_id
+для синхронизации с WFM). Модель «revert + re-apply на том же comp»:
+
+  • otrabotka — только в статусе pending: можно менять days и/или набор WDD
+    (debt_detail_ids). Сумма и распределение по дням пересчитываются
+    автоматически (split_duration), как при приёме. work_debt пока не трогается
+    (пересчёт долга — на этапе верификации).
+
+  • остальные типы (оправдание долга, auto-approve) — можно менять набор WDD
+    и/или applied_duration; work_debt и work_debt_details пересчитываются сразу
+    (recompute_for_operator).
+
+Дочерние записи (CompensationDay / CompensationDebtLink / запись-остаток)
+полностью пересоздаются на каждом редактировании, поэтому результат всегда
+консистентен и идемпотентен. Пропущенные поля берутся из текущей заявки.
+"""
+from datetime import date as _date, timedelta
+
+from django.db import transaction
+
+from ..models import Compensation
+from .otrabotka import (
+    OTRABOTKA_CODE,
+    _validate_inputs as _validate_otrabotka_inputs,
+    apply_otrabotka_effects,
+    revert_otrabotka_effects,
+    get_conflicts,
+    OtrabotkaError,
+)
+from .debt_compensation import (
+    _validate as _validate_debt,
+    _wdd_total,
+    apply_debt_effects,
+    revert_debt_effects,
+    DebtCompensationError,
+)
+from ..models import WorkDebtDetail
+from .work_debt import recompute_for_operator
+
+
+class CompensationEditError(Exception):
+    def __init__(self, message, code="error", payload=None, http_status=400):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.payload = payload or {}
+        self.http_status = http_status
+
+
+def _is_otrabotka(comp) -> bool:
+    return bool(comp.type_rule) and comp.type_rule.code == OTRABOTKA_CODE
+
+
+def _current_debt_detail_ids(comp):
+    return list(comp.debt_links.values_list("debt_detail_id", flat=True))
+
+
+def _parse_day(value):
+    if isinstance(value, _date):
+        return value
+    return _date.fromisoformat(str(value))
+
+
+@transaction.atomic
+def edit_compensation(comp, *, days=None, debt_detail_ids=None,
+                      applied_duration=None, comment=None, user=None):
+    """Редактировать принятую компенсацию на том же record. Диспетчеризация по
+    типу. Возвращает обновлённый Compensation. Ошибки → CompensationEditError."""
+    comp = Compensation.objects.select_for_update().get(pk=comp.pk)
+
+    if _is_otrabotka(comp):
+        return _edit_otrabotka(
+            comp, days=days, debt_detail_ids=debt_detail_ids,
+            comment=comment, user=user,
+        )
+    return _edit_debt(
+        comp, debt_detail_ids=debt_detail_ids,
+        applied_duration=applied_duration, comment=comment, user=user,
+    )
+
+
+def _edit_otrabotka(comp, *, days, debt_detail_ids, comment, user):
+    if comp.status != "pending":
+        raise CompensationEditError(
+            f"Заявку отработки можно редактировать только в статусе «pending» "
+            f"(текущий: «{comp.status}»).",
+            code="not_editable", payload={"status": comp.status},
+        )
+
+    operator = comp.operator
+    # Пропущенные поля → из текущей заявки.
+    if debt_detail_ids is None:
+        debt_detail_ids = _current_debt_detail_ids(comp)
+    if days is None:
+        days = list(comp.days.values_list("day", flat=True))
+    days = [_parse_day(d) for d in days]
+
+    # Сначала откат (разблокируем СВОИ WDD и освобождаем СВОИ дни), потом
+    # валидация нового набора — иначе проверки locked/occupied упадут на самих себе.
+    revert_otrabotka_effects(comp)
+
+    try:
+        cycle, rule, wdds, days, total = _validate_otrabotka_inputs(
+            operator, debt_detail_ids, days, retroactive=False,
+        )
+    except OtrabotkaError as exc:
+        raise CompensationEditError(
+            exc.message, code=exc.code,
+            payload=getattr(exc, "payload", {}),
+            http_status=getattr(exc, "http_status", 400),
+        )
+
+    conflicts = get_conflicts(operator, days)
+    if conflicts:
+        raise CompensationEditError(
+            "На выбранные дни есть заявки Отпрашивание или Перенос рабочего дня "
+            "— редактирование отработки невозможно.",
+            code="conflict", payload={"conflicts": conflicts}, http_status=409,
+        )
+
+    comp.requested_duration = total
+    comp.planned_date = min(days)
+    if comment is not None:
+        comp.comment = comment
+    comp.save(update_fields=[
+        "requested_duration", "planned_date", "comment", "updated_at",
+    ])
+
+    apply_otrabotka_effects(comp, wdds, days, total)
+    comp.refresh_from_db()
+    return comp
+
+
+def _edit_debt(comp, *, debt_detail_ids, applied_duration, comment, user):
+    if comp.status != "approved":
+        raise CompensationEditError(
+            f"Заявку-оправдание можно редактировать только в статусе «approved» "
+            f"(текущий: «{comp.status}»).",
+            code="not_editable", payload={"status": comp.status},
+        )
+
+    operator = comp.operator
+    code = comp.type_rule.code if comp.type_rule else None
+    # Пропущенные поля → из текущей заявки.
+    if debt_detail_ids is None:
+        debt_detail_ids = _current_debt_detail_ids(comp)
+    if applied_duration is None:
+        # Сохранить текущий списанный объём, но не больше новой суммы выбранных
+        # долгов (иначе при уменьшении набора WDD получили бы applied_too_big).
+        new_total = sum(
+            (_wdd_total(w) for w in WorkDebtDetail.objects.filter(
+                id__in=debt_detail_ids, operator=operator)),
+            timedelta(),
+        )
+        current = comp.verified_duration or new_total
+        applied_duration = min(current, new_total) if new_total > timedelta() else current
+
+    # Откат (удаляем остаток, разблокируем и отвязываем СВОИ WDD), затем валидация
+    # нового набора (проверка locked не должна споткнуться о собственные WDD).
+    revert_debt_effects(comp)
+
+    try:
+        cycle, rule, wdds, total, applied, remainder = _validate_debt(
+            operator, code, debt_detail_ids, applied_duration,
+        )
+    except DebtCompensationError as exc:
+        raise CompensationEditError(
+            exc.message, code=exc.code,
+            payload=getattr(exc, "payload", {}),
+            http_status=getattr(exc, "http_status", 400),
+        )
+
+    comp.requested_duration = total
+    comp.verified_duration = applied
+    comp.remaining_debt = remainder
+    if comment is not None:
+        comp.comment = comment
+    comp.save(update_fields=[
+        "requested_duration", "verified_duration", "remaining_debt",
+        "comment", "updated_at",
+    ])
+
+    apply_debt_effects(comp, wdds, rule, total, applied, remainder)
+    recompute_for_operator(operator, cycle)
+    comp.refresh_from_db()
+    return comp

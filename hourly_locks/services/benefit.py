@@ -42,6 +42,7 @@ BENEFIT_CODES = [
     "lgota", "lgota_brak", "lgota_rojdenie", "lgota_utrata",
     "lgota_pereezd", "lgota_prochie",
     "hoz_raboty",
+    "perenos_dnya",   # Перенос рабочего дня — приём/редактирование как у льготы
 ]
 
 # Конфликтующие заявки по коду льготы (на те же дни). Если есть — не принимаем.
@@ -202,21 +203,27 @@ def _day_excused(operator, day, ctx) -> timedelta:
     return timedelta(0)
 
 
-def _taken_days(operator, rule, days) -> set:
+def _taken_days(operator, rule, days, exclude_transfer_id=None) -> set:
     """Дни, на которые у оператора УЖЕ есть АКТИВНАЯ заявка ЭТОГО ЖЕ типа
-    (запрет дубля: 1 тип / 1 оператор / 1 день — один раз)."""
-    taken = set(
-        BenefitDay.objects.filter(
-            transfer__operator=operator, transfer__type_rule=rule,
-            transfer__status__in=ACTIVE_STATUSES, day__in=days,
-        ).values_list("day", flat=True)
+    (запрет дубля: 1 тип / 1 оператор / 1 день — один раз).
+    exclude_transfer_id — при редактировании исключает саму редактируемую
+    заявку, иначе она сочла бы собственные дни занятыми."""
+    bday_qs = BenefitDay.objects.filter(
+        transfer__operator=operator, transfer__type_rule=rule,
+        transfer__status__in=ACTIVE_STATUSES, day__in=days,
     )
+    if exclude_transfer_id is not None:
+        bday_qs = bday_qs.exclude(transfer_id=exclude_transfer_id)
+    taken = set(bday_qs.values_list("day", flat=True))
     # старые заявки без BenefitDay (по диапазону дат)
     lo, hi = min(days), max(days)
-    for t in Transfer.objects.filter(
+    range_qs = Transfer.objects.filter(
         operator=operator, type_rule=rule, status__in=ACTIVE_STATUSES,
         benefit_days__isnull=True, date_from__lte=hi, date_to__gte=lo,
-    ).distinct():
+    )
+    if exclude_transfer_id is not None:
+        range_qs = range_qs.exclude(id=exclude_transfer_id)
+    for t in range_qs.distinct():
         d, end = t.date_from, (t.date_to or t.date_from)
         while d <= end:
             if d in days:
@@ -225,16 +232,18 @@ def _taken_days(operator, rule, days) -> set:
     return taken
 
 
-def _operator_plan(operator, ctx):
+def _operator_plan(operator, ctx, exclude_transfer_id=None):
     """
     (valid_days, dropped) для оператора. valid_days — РАБОЧИЕ дни БЕЗ
     конфликтов и БЕЗ дубля. Остальные дни выбрасываются с причиной.
+    exclude_transfer_id — при редактировании исключает саму заявку из проверки
+    дубля (её дни не считаются занятыми ею же).
     """
     days = ctx["days"]
     non_work = [d for d in days if not _is_working_day(operator, d)]
     conflicts = get_benefit_conflicts(operator, ctx["rule"].code, days)
     conf_days = {c["day"] for c in conflicts}   # строки
-    taken = _taken_days(operator, ctx["rule"], days)
+    taken = _taken_days(operator, ctx["rule"], days, exclude_transfer_id)
     nonwork_set = set(non_work)
     valid = [d for d in days
              if d not in nonwork_set and str(d) not in conf_days and d not in taken]
@@ -278,32 +287,46 @@ def preview_benefit(*, operators=None, operator_ids=None, select_all_shift=None,
     }
 
 
-@transaction.atomic
-def _accept_request(operator, valid_days, ctx, comment, user, source, pdf_file, screens):
-    """ОДНА заявка-льгота на оператора, покрывающая все его рабочие дни."""
-    # Запрошенная длительность = сумма освобождаемого по дням (окно или work_norm).
-    # Льгота авто-одобрена → Подтверждённая = Запрошенная.
+def apply_benefit_effects(tr, operator, valid_days, ctx):
+    """Установить поля льготы на tr (status/даты/часы/длительность/подтип) и
+    пересоздать BenefitDay. Единый источник эффектов льготы — используется при
+    приёме (_accept_request) и редактировании (transfer_edit). `tr` уже содержит
+    operator/cycle/type_rule; может быть новым (несохранённым) или существующим.
+    Льгота авто-одобрена → Подтверждённая = Запрошенная."""
     total = sum((_day_excused(operator, d, ctx) for d in valid_days), timedelta(0))
-    tr = Transfer.objects.create(
-        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
-        status="approved",
-        date_from=min(valid_days), date_to=max(valid_days),
-        hour_from=None if ctx["full_day"] else ctx["hour_from"],
-        hour_to=None if ctx["full_day"] else ctx["hour_to"],
-        requested_duration=total or None,
-        verified_duration=total or None,         # авто-одобрено
-        subtype=ctx["subtype"],
-        comment=comment or "", pdf_file=pdf_file, screens=screens,
-        fixed_by=user,
-    )
+    hf = None if ctx["full_day"] else ctx["hour_from"]
+    ht = None if ctx["full_day"] else ctx["hour_to"]
+    tr.status = "approved"
+    tr.date_from = min(valid_days)
+    tr.date_to = max(valid_days)
+    tr.hour_from = hf
+    tr.hour_to = ht
+    tr.requested_duration = total or None
+    tr.verified_duration = total or None
+    tr.subtype = ctx["subtype"]
+    tr.save()
+    tr.benefit_days.all().delete()
     for d in valid_days:
         BenefitDay.objects.create(
-            transfer=tr, day=d,
-            hour_from=None if ctx["full_day"] else ctx["hour_from"],
-            hour_to=None if ctx["full_day"] else ctx["hour_to"],
+            transfer=tr, day=d, hour_from=hf, hour_to=ht,
             duration=None if ctx["full_day"] else ctx["window"],
         )
     return tr
+
+
+def revert_benefit_effects(tr):
+    """Удалить BenefitDay заявки (поля tr перезапишет apply). Идемпотентно."""
+    tr.benefit_days.all().delete()
+
+
+@transaction.atomic
+def _accept_request(operator, valid_days, ctx, comment, user, source, pdf_file, screens):
+    """ОДНА заявка-льгота на оператора, покрывающая все его рабочие дни."""
+    tr = Transfer(
+        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
+        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
+    )
+    return apply_benefit_effects(tr, operator, valid_days, ctx)
 
 
 def accept_benefit(*, operators=None, operator_ids=None, select_all_shift=None,

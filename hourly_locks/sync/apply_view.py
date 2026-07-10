@@ -279,6 +279,176 @@ class ApplyRequestView(APIView):
     }
 
 
+class EditCompensationView(APIView):
+    """WFM PATCH /compensations/:id → shu endpoint.
+
+    Django edit_compensation'ni chaqiradi (revert + re-apply BIR XIL record'da,
+    PK barqaror → WFM sync churn yo'q). Tur bo'yicha:
+      - otrabotka          — faqat pending: days va/yoki debt_detail_ids
+      - qolgan (oправдание) — approved: debt_detail_ids va/yoki applied_duration
+    So'ng A1: ta'sirlangan operator holatini WFM'ga darhol push qiladi.
+
+    Body: {
+      "compensation_id": <django pk = external_id>,   # majburiy
+      "days": ["YYYY-MM-DD", ...],            # ixtiyoriy (otrabotka)
+      "debt_detail_ids": [<wdd id>, ...],     # ixtiyoriy
+      "applied_duration": "H:MM",             # ixtiyoriy (oправдание)
+      "comment": "..."                        # ixtiyoriy
+    }
+    Berilmagan maydonlar joriy arizadan olinadi.
+    """
+    permission_classes = [HasServiceToken]
+
+    def patch(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        from hourly_locks.services.compensation_edit import (
+            edit_compensation, CompensationEditError,
+        )
+        data = request.data
+        comp_id = data.get("compensation_id") or data.get("external_id")
+        if not comp_id:
+            return Response(
+                {"ok": False, "code": "no_id",
+                 "detail": "compensation_id majburiy"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        comp = Compensation.objects.filter(id=comp_id).first()
+        if not comp:
+            return Response(
+                {"ok": False, "code": "not_found",
+                 "detail": f"compensation topilmadi: {comp_id}"},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        # Faqat berilgan (None emas) maydonlarni uzatamiz — qolgani joriy holatdan.
+        kwargs = {}
+        for key in ("days", "debt_detail_ids", "applied_duration"):
+            if data.get(key) is not None:
+                kwargs[key] = data[key]
+        if "comment" in data:
+            kwargs["comment"] = data["comment"]
+
+        try:
+            with transaction.atomic():
+                comp = edit_compensation(comp, **kwargs)
+        except CompensationEditError as exc:
+            return Response(
+                {"ok": False, "code": exc.code, "detail": exc.message, **exc.payload},
+                status=exc.http_status,
+            )
+        except Exception as exc:
+            return Response(
+                {"ok": False, "code": "error", "detail": str(exc)},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # A1: operator holatini WFM'ga darhol sinxronla (xato bo'lsa ariza buzilmaydi).
+        try:
+            from hourly_locks.services.cycle import get_active_cycle
+            from hourly_locks.sync.runners_sync import push_after_apply
+            push_after_apply({comp.operator_id}, get_active_cycle())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "edit-compensation WFM push xato: %s", exc)
+
+        return Response({
+            "ok": True,
+            "type": "compensation_edit",
+            "compensation_id": comp.id,
+            "status": comp.status,
+            "work_debt": _work_debt_payload(comp.operator, comp.cycle),
+        })
+
+
+class EditTransferView(APIView):
+    """WFM PATCH /transfers/:id → shu endpoint.
+
+    Django edit_transfer'ni chaqiradi (revert + re-apply BIR XIL Transfer'da,
+    PK barqaror). Tur bo'yicha:
+      - otprashivanie   — leave_days (days) / workoff_days / hours; otgul VA
+        bog'liq otrabotka comp kunlari qayta yaratiladi. Comp verified bo'lsa blok.
+      - ucheba_rabochee — days / hours; UchebaDay qayta, status → pending.
+      - qolganlari (benefit: льготы, perenos_dnya, ...) — days / hours / subtype.
+    completed / declined — blok. So'ng A1: operator holatini WFM'ga push.
+
+    Body: {
+      "transfer_id": <django pk = external_id>,   # majburiy
+      "days": ["YYYY-MM-DD", ...],           # ixtiyoriy (otgul/льгота/ucheba kunlari)
+      "workoff_days": ["YYYY-MM-DD", ...],   # ixtiyoriy (otprashivanie otrabotka kunlari)
+      "hour_from": "HH:MM", "hour_to": "HH:MM",  # ixtiyoriy
+      "subtype": "otgul|korotkiy_den",       # ixtiyoriy (lgota_prochie)
+      "comment": "..."                       # ixtiyoriy
+    }
+    Berilmagan maydonlar joriy arizadan olinadi.
+    """
+    permission_classes = [HasServiceToken]
+
+    def patch(self, request):
+        return self._handle(request)
+
+    def post(self, request):
+        return self._handle(request)
+
+    def _handle(self, request):
+        from hourly_locks.services.transfer_edit import (
+            edit_transfer, TransferEditError,
+        )
+        data = request.data
+        tr_id = data.get("transfer_id") or data.get("external_id")
+        if not tr_id:
+            return Response(
+                {"ok": False, "code": "no_id", "detail": "transfer_id majburiy"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        tr = Transfer.objects.filter(id=tr_id).first()
+        if not tr:
+            return Response(
+                {"ok": False, "code": "not_found",
+                 "detail": f"transfer topilmadi: {tr_id}"},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+
+        kwargs = {}
+        for key in ("days", "workoff_days", "hour_from", "hour_to", "subtype"):
+            if data.get(key) is not None:
+                kwargs[key] = data[key]
+        if "comment" in data:
+            kwargs["comment"] = data["comment"]
+
+        try:
+            with transaction.atomic():
+                result = edit_transfer(tr, **kwargs)
+        except TransferEditError as exc:
+            return Response(
+                {"ok": False, "code": exc.code, "detail": exc.message, **exc.payload},
+                status=exc.http_status,
+            )
+        except Exception as exc:
+            return Response(
+                {"ok": False, "code": "error", "detail": str(exc)},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # A1: operator holatini WFM'ga darhol sinxronla.
+        try:
+            from hourly_locks.services.cycle import get_active_cycle
+            from hourly_locks.sync.runners_sync import push_after_apply
+            tr.refresh_from_db()
+            push_after_apply({tr.operator_id}, get_active_cycle())
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "edit-transfer WFM push xato: %s", exc)
+
+        return Response({"ok": True, "type": "transfer_edit", **result})
+
+
 class _ApplyError(Exception):
     """Sync-view ichki xatosi (accept_* Error naqshi bilan bir xil shakl)."""
     def __init__(self, message, code="error", payload=None,

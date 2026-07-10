@@ -274,6 +274,67 @@ def _validate_inputs(operator, debt_detail_ids, days, retroactive=False):
     return cycle, rule, wdds, days, total
 
 
+def apply_otrabotka_effects(comp, wdds, days, total):
+    """Создать CompensationDay + CompensationDebtLink и заблокировать выбранные
+    WDD под заявку отработки. Единственный источник эффектов отработки —
+    используется и при приёме (accept_otrabotka), и при редактировании
+    (compensation_edit.edit_compensation). `comp` уже создан/обновлён с нужными
+    полями (requested_duration, planned_date и т.п.)."""
+    parts = split_duration(total, len(days))
+    for d, p in zip(days, parts):
+        CompensationDay.objects.create(
+            compensation=comp, day=d, allocated_duration=p, status="pending",
+        )
+
+    # «Переезд» долгов в заявку + блокировка из списка открытых долгов
+    snapshots = []
+    for w in wdds:
+        snap = {
+            "id": w.id,
+            "day": str(w.day),
+            "source": w.source,
+            "shift_code": w.shift_code_snapshot,
+            "norm_full": str(w.norm_full),
+            "fact_full": str(w.fact_full),
+            "debt_full": str(w.debt_full),
+            "norm_lock": str(w.norm_lock),
+            "fact_lock": str(w.fact_lock),
+            "debt_lock": str(w.debt_lock),
+            "note": w.note or "",
+        }
+        CompensationDebtLink.objects.create(
+            compensation=comp, debt_detail=w, snapshot=snap, applied=False,
+        )
+        snapshots.append(snap)
+
+        w.locked_for_compensation = True
+        w.note = (w.note or "") + (
+            f"\nПеренесён в заявку отработки #{comp.id} ({now():%Y-%m-%d %H:%M})"
+        )
+        w.save(update_fields=["locked_for_compensation", "note", "updated_at"])
+
+    comp.debts_snapshot = snapshots
+    comp.save(update_fields=["debts_snapshot", "updated_at"])
+
+
+def revert_otrabotka_effects(comp):
+    """Откатить эффекты отработки: удалить CompensationDay и CompensationDebtLink
+    этой заявки, разблокировать связанные WDD. Статус НЕ трогаем — им управляет
+    вызывающий код. Идемпотентно (можно вызвать повторно)."""
+    CompensationDay.objects.filter(compensation=comp).delete()
+    for link in CompensationDebtLink.objects.filter(
+        compensation=comp,
+    ).select_related("debt_detail"):
+        w = link.debt_detail
+        if w and w.locked_for_compensation:
+            w.locked_for_compensation = False
+            w.save(update_fields=["locked_for_compensation", "updated_at"])
+        link.delete()
+    if comp.debts_snapshot:
+        comp.debts_snapshot = []
+        comp.save(update_fields=["debts_snapshot", "updated_at"])
+
+
 def preview_otrabotka(*, operator, debt_detail_ids, days, retroactive=False) -> dict:
     """
     Сухой прогон: проверки + конфликты + расчёт распределения по дням.
@@ -345,8 +406,6 @@ def accept_otrabotka(*, operator, debt_detail_ids, days, comment="",
             code="conflict", payload={"conflicts": conflicts}, http_status=409,
         )
 
-    parts = split_duration(total, len(days))
-
     comp = Compensation.objects.create(
         operator=operator,
         cycle=cycle,
@@ -364,40 +423,7 @@ def accept_otrabotka(*, operator, debt_detail_ids, days, comment="",
         fixed_by=user,
     )
 
-    for d, p in zip(days, parts):
-        CompensationDay.objects.create(
-            compensation=comp, day=d, allocated_duration=p, status="pending",
-        )
-
-    # «Переезд» долгов в заявку + блокировка из списка открытых долгов
-    snapshots = []
-    for w in wdds:
-        snap = {
-            "id": w.id,
-            "day": str(w.day),
-            "source": w.source,
-            "shift_code": w.shift_code_snapshot,
-            "norm_full": str(w.norm_full),
-            "fact_full": str(w.fact_full),
-            "debt_full": str(w.debt_full),
-            "norm_lock": str(w.norm_lock),
-            "fact_lock": str(w.fact_lock),
-            "debt_lock": str(w.debt_lock),
-            "note": w.note or "",
-        }
-        CompensationDebtLink.objects.create(
-            compensation=comp, debt_detail=w, snapshot=snap, applied=False,
-        )
-        snapshots.append(snap)
-
-        w.locked_for_compensation = True
-        w.note = (w.note or "") + (
-            f"\nПеренесён в заявку отработки #{comp.id} ({now():%Y-%m-%d %H:%M})"
-        )
-        w.save(update_fields=["locked_for_compensation", "note", "updated_at"])
-
-    comp.debts_snapshot = snapshots
-    comp.save(update_fields=["debts_snapshot", "updated_at"])
+    apply_otrabotka_effects(comp, wdds, days, total)
 
     # Ретроактивная: оператор уже отработал — проверяем СРАЗУ по факту.
     if retroactive:

@@ -181,21 +181,39 @@ def preview_ucheba(*, operators, days, hour_from, hour_to) -> dict:
             "operators": per_op, "ok": bool(per_op) and all(o["ok"] for o in per_op)}
 
 
-@transaction.atomic
-def _accept_one(operator, valid_days, ctx, comment, user, pdf_file, screens):
+def apply_ucheba_effects(tr, valid_days, ctx):
+    """Установить поля учёбы на tr (status=pending/даты/часы/длительность) и
+    пересоздать UchebaDay. Единый источник эффектов учёбы — приём (_accept_one)
+    и редактирование (transfer_edit). Редактирование сбрасывает статус в pending
+    → повторная верификация в пайплайне. `tr` содержит operator/cycle/type_rule."""
     total = ctx["window"] * len(valid_days)
-    tr = Transfer.objects.create(
-        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
-        status="pending",
-        date_from=min(valid_days), date_to=max(valid_days),
-        hour_from=ctx["hour_from"], hour_to=ctx["hour_to"],
-        requested_duration=total,
-        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
-    )
+    tr.status = "pending"
+    tr.date_from = min(valid_days)
+    tr.date_to = max(valid_days)
+    tr.hour_from = ctx["hour_from"]
+    tr.hour_to = ctx["hour_to"]
+    tr.requested_duration = total
+    tr.save()
+    tr.ucheba_days.all().delete()
     for d in valid_days:
         UchebaDay.objects.create(
             transfer=tr, day=d, hour_from=ctx["hour_from"], hour_to=ctx["hour_to"],
             duration=ctx["window"], status="pending")
+    return tr
+
+
+def revert_ucheba_effects(tr):
+    """Удалить UchebaDay заявки (поля tr перезапишет apply). Идемпотентно."""
+    tr.ucheba_days.all().delete()
+
+
+@transaction.atomic
+def _accept_one(operator, valid_days, ctx, comment, user, pdf_file, screens):
+    tr = Transfer(
+        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
+        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
+    )
+    apply_ucheba_effects(tr, valid_days, ctx)
     notify.notify_operator(operator, "ucheba_created", {
         "transfer_id": tr.id, "days": [str(d) for d in valid_days],
         "window": str(ctx["window"])})

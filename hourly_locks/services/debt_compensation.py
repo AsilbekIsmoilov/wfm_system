@@ -221,7 +221,30 @@ def accept_debt_compensation(*, operator, code, debt_detail_ids,
         verified_at=now(),
     )
 
-    # «Переезд» ВСЕХ выбранных долгов в заявку: applied=True на полный долг WDD.
+    apply_debt_effects(comp, wdds, rule, total, applied, remainder)
+
+    recompute_for_operator(operator, cycle)
+
+    notify.notify_operator(operator, "debt_compensation_created", {
+        "compensation_id": comp.id,
+        "type": rule.code,
+        "total_duration": str(total),
+        "applied_duration": str(applied),
+        "remainder": str(remainder),
+        "status": comp.status,
+    })
+
+    return comp
+
+
+def apply_debt_effects(comp, wdds, rule, total, applied, remainder):
+    """«Переезд» выбранных WDD в заявку-оправдание: applied-связки на полный долг,
+    блокировка WDD и (при частичном списании) одна запись-остаток. Единственный
+    источник эффектов оправдания — используется при приёме (accept) и при
+    редактировании (compensation_edit). `comp` уже создан/обновлён с полями
+    requested_duration / verified_duration / remaining_debt."""
+    operator = comp.operator
+    cycle = comp.cycle
     snapshots = []
     total_full = timedelta(0)
     total_lock = timedelta(0)
@@ -276,18 +299,28 @@ def accept_debt_compensation(*, operator, code, debt_detail_ids,
     comp.debts_snapshot = snapshots
     comp.save(update_fields=["debts_snapshot", "updated_at"])
 
-    recompute_for_operator(operator, cycle)
 
-    notify.notify_operator(operator, "debt_compensation_created", {
-        "compensation_id": comp.id,
-        "type": rule.code,
-        "total_duration": str(total),
-        "applied_duration": str(applied),
-        "remainder": str(remainder),
-        "status": comp.status,
-    })
-
-    return comp
+def revert_debt_effects(comp):
+    """Откатить эффекты оправдания: удалить запись-остаток этой заявки,
+    разблокировать и полностью отвязать WDD (удалить CompensationDebtLink).
+    Статус НЕ трогаем — им управляет вызывающий код. Идемпотентно.
+    В отличие от cancel_debt_compensation (которая ставит declined и лишь
+    сбрасывает applied), здесь связки удаляются — для чистого повторного
+    применения при редактировании."""
+    WorkDebtDetail.objects.filter(
+        source=REMAINDER_SOURCE, source_object_id=comp.id,
+    ).delete()
+    for link in CompensationDebtLink.objects.filter(
+        compensation=comp,
+    ).select_related("debt_detail"):
+        w = link.debt_detail
+        if w and w.locked_for_compensation:
+            w.locked_for_compensation = False
+            w.save(update_fields=["locked_for_compensation", "updated_at"])
+        link.delete()
+    if comp.debts_snapshot:
+        comp.debts_snapshot = []
+        comp.save(update_fields=["debts_snapshot", "updated_at"])
 
 
 @transaction.atomic
