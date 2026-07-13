@@ -23,6 +23,7 @@ from ..models import Compensation
 from .otrabotka import (
     OTRABOTKA_CODE,
     _validate_inputs as _validate_otrabotka_inputs,
+    _resolve_day_durations,
     apply_otrabotka_effects,
     revert_otrabotka_effects,
     get_conflicts,
@@ -64,7 +65,8 @@ def _parse_day(value):
 
 @transaction.atomic
 def edit_compensation(comp, *, days=None, debt_detail_ids=None,
-                      applied_duration=None, comment=None, user=None):
+                      durations=None, applied_duration=None,
+                      comment=None, user=None):
     """Редактировать принятую компенсацию на том же record. Диспетчеризация по
     типу. Возвращает обновлённый Compensation. Ошибки → CompensationEditError."""
     comp = Compensation.objects.select_for_update().get(pk=comp.pk)
@@ -72,7 +74,7 @@ def edit_compensation(comp, *, days=None, debt_detail_ids=None,
     if _is_otrabotka(comp):
         return _edit_otrabotka(
             comp, days=days, debt_detail_ids=debt_detail_ids,
-            comment=comment, user=user,
+            durations=durations, comment=comment, user=user,
         )
     return _edit_debt(
         comp, debt_detail_ids=debt_detail_ids,
@@ -80,7 +82,7 @@ def edit_compensation(comp, *, days=None, debt_detail_ids=None,
     )
 
 
-def _edit_otrabotka(comp, *, days, debt_detail_ids, comment, user):
+def _edit_otrabotka(comp, *, days, debt_detail_ids, durations, comment, user):
     if comp.status != "pending":
         raise CompensationEditError(
             f"Заявку отработки можно редактировать только в статусе «pending» "
@@ -89,11 +91,13 @@ def _edit_otrabotka(comp, *, days, debt_detail_ids, comment, user):
         )
 
     operator = comp.operator
+    # Текущие per-day длительности (ДО отката) — дефолт, если durations не заданы.
+    current = {d: dur for d, dur in comp.days.values_list("day", "allocated_duration")}
     # Пропущенные поля → из текущей заявки.
     if debt_detail_ids is None:
         debt_detail_ids = _current_debt_detail_ids(comp)
     if days is None:
-        days = list(comp.days.values_list("day", flat=True))
+        days = list(current.keys())
     days = [_parse_day(d) for d in days]
 
     # Сначала откат (разблокируем СВОИ WDD и освобождаем СВОИ дни), потом
@@ -119,15 +123,32 @@ def _edit_otrabotka(comp, *, days, debt_detail_ids, comment, user):
             code="conflict", payload={"conflicts": conflicts}, http_status=409,
         )
 
-    comp.requested_duration = total
+    # durations из запроса; если не заданы — сохраняем текущие per-day длительности
+    # (когда все дни совпали), иначе None → авто-раздел суммы долгов.
+    if durations is None and all(d in current for d in days):
+        durations = [current[d] for d in days]
+    try:
+        day_durations, requested = _resolve_day_durations(durations, days, total)
+    except OtrabotkaError as exc:
+        raise CompensationEditError(
+            exc.message, code=exc.code,
+            payload=getattr(exc, "payload", {}),
+            http_status=getattr(exc, "http_status", 400),
+        )
+
+    comp.requested_duration = requested
     comp.planned_date = min(days)
+    meta = dict(comp.claim_metadata or {})
+    meta["debt_total"] = str(total)
+    comp.claim_metadata = meta
     if comment is not None:
         comp.comment = comment
     comp.save(update_fields=[
-        "requested_duration", "planned_date", "comment", "updated_at",
+        "requested_duration", "planned_date", "claim_metadata", "comment",
+        "updated_at",
     ])
 
-    apply_otrabotka_effects(comp, wdds, days, total)
+    apply_otrabotka_effects(comp, wdds, days, day_durations)
     comp.refresh_from_db()
     return comp
 

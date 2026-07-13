@@ -484,8 +484,13 @@ class OtrabotkaAcceptSerializer(serializers.Serializer):
     """
     Вход для preview/accept заявки отработки.
 
-    requested_duration НЕ принимается с фронта — считается как сумма
-    выбранных записей долга. Дни — в пределах активного цикла.
+    Сумма выбранных долгов считается автоматически. durations — необязательный
+    список длительностей ПО ДНЯМ (выровнен с days, каждый день редактируется на
+    фронте): каждый CompensationDay получает свою длительность, requested_duration
+    = их сумма. Сумма может быть МЕНЬШЕ суммы долгов (частичная отработка) —
+    непокрытый остаток при верификации возвращается в открытый долг; оригинальная
+    сумма долгов доступна в claim_metadata.debt_total. Если durations не задан —
+    сумма долгов делится поровну. Дни — в пределах активного цикла.
     """
     operator_id = serializers.IntegerField()
     debt_detail_ids = serializers.ListField(
@@ -493,6 +498,10 @@ class OtrabotkaAcceptSerializer(serializers.Serializer):
     )
     days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
+    )
+    durations = serializers.ListField(
+        child=serializers.DurationField(), required=False, allow_null=True,
+        allow_empty=True,
     )
     comment = serializers.CharField(
         required=False, allow_blank=True, default="",

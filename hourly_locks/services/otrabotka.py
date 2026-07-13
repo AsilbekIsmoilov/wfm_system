@@ -274,14 +274,14 @@ def _validate_inputs(operator, debt_detail_ids, days, retroactive=False):
     return cycle, rule, wdds, days, total
 
 
-def apply_otrabotka_effects(comp, wdds, days, total):
-    """Создать CompensationDay + CompensationDebtLink и заблокировать выбранные
-    WDD под заявку отработки. Единственный источник эффектов отработки —
-    используется и при приёме (accept_otrabotka), и при редактировании
-    (compensation_edit.edit_compensation). `comp` уже создан/обновлён с нужными
-    полями (requested_duration, planned_date и т.п.)."""
-    parts = split_duration(total, len(days))
-    for d, p in zip(days, parts):
+def apply_otrabotka_effects(comp, wdds, days, day_durations):
+    """Создать CompensationDay (по одному на день, со своей длительностью) +
+    CompensationDebtLink и заблокировать выбранные WDD под заявку отработки.
+    Единственный источник эффектов отработки — приём (accept_otrabotka) и
+    редактирование (compensation_edit). `day_durations` — список timedelta,
+    выровненный с `days` (каждый день редактируется отдельно на фронте).
+    requested_duration заявки = их сумма (её выставляет вызывающий accept/edit)."""
+    for d, p in zip(days, day_durations):
         CompensationDay.objects.create(
             compensation=comp, day=d, allocated_duration=p, status="pending",
         )
@@ -377,13 +377,68 @@ def preview_otrabotka(*, operator, debt_detail_ids, days, retroactive=False) -> 
     return result
 
 
+def _parse_td(value):
+    """timedelta | 'H:MM[:SS]' | секунды(int/str) → timedelta."""
+    if isinstance(value, timedelta):
+        return value
+    if isinstance(value, (int, float)):
+        return timedelta(seconds=int(value))
+    s = str(value).strip()
+    if ":" in s:
+        parts = [int(p) for p in s.split(":")]
+        while len(parts) < 3:
+            parts.append(0)
+        return timedelta(hours=parts[0], minutes=parts[1], seconds=parts[2])
+    return timedelta(seconds=int(s))
+
+
+def _resolve_day_durations(durations, days, total):
+    """Длительности отработки ПО ДНЯМ (каждый день редактируется на фронте).
+    None/пусто → авто-раздел суммы долгов по дням (split_duration, обычная отработка).
+    Иначе: len(durations)==len(days), каждая > 0, а СУММА ≤ сумма выбранных долгов
+    (частичная отработка). Недопокрытый остаток при верификации возвращается в
+    открытый долг (_apply_credit_partial). Возвращает (list[timedelta], requested)."""
+    if durations in (None, "", []):
+        parts = split_duration(total, len(days))
+        return parts, sum(parts, timedelta(0))
+    if len(durations) != len(days):
+        raise OtrabotkaError(
+            f"Число длительностей ({len(durations)}) не совпадает с числом "
+            f"дней ({len(days)}).",
+            code="durations_mismatch",
+            payload={"durations": len(durations), "days": len(days)})
+    parsed = []
+    for v in durations:
+        td = _parse_td(v)
+        if td <= timedelta(0):
+            raise OtrabotkaError(
+                "Длительность отработки по дню должна быть больше нуля.",
+                code="bad_duration")
+        parsed.append(td)
+    requested = sum(parsed, timedelta(0))
+    if requested > total:
+        raise OtrabotkaError(
+            f"Суммарная длительность отработки ({requested}) больше суммы "
+            f"выбранных долгов ({total}).",
+            code="durations_too_big",
+            payload={"requested": str(requested), "total": str(total)})
+    return parsed, requested
+
+
 @transaction.atomic
-def accept_otrabotka(*, operator, debt_detail_ids, days, comment="",
-                     user=None, source="requested",
+def accept_otrabotka(*, operator, debt_detail_ids, days, durations=None,
+                     comment="", user=None, source="requested",
                      pdf_file=None, screens=None,
                      retroactive=False) -> Compensation:
     """
     Принять заявку отработки. Конфликты => OtrabotkaError (не принимается).
+
+    durations — необязательный список длительностей ПО ДНЯМ (выровнен с days,
+    каждый день редактируется на фронте). Если задан: каждый CompensationDay
+    получает свою длительность, requested_duration = их сумма. Сумма может быть
+    МЕНЬШЕ суммы выбранных долгов (частичная отработка) — непокрытый остаток при
+    верификации возвращается в открытый долг. Если не задан — сумма долгов делится
+    поровну (обычная отработка). Оригинальная сумма долгов → claim_metadata.debt_total.
 
     retroactive=True — оператор уже отработал в прошедшие дни цикла: заявка
     принимается и СРАЗУ проверяется по факту (verify_otrabotka), статус
@@ -394,6 +449,7 @@ def accept_otrabotka(*, operator, debt_detail_ids, days, comment="",
     cycle, rule, wdds, days, total = _validate_inputs(
         operator, debt_detail_ids, days, retroactive=retroactive,
     )
+    day_durations, requested = _resolve_day_durations(durations, days, total)
 
     conflicts = get_conflicts(operator, days)
     if conflicts:
@@ -413,17 +469,17 @@ def accept_otrabotka(*, operator, debt_detail_ids, days, comment="",
         source=source,
         status="pending",
         planned_date=min(days),
-        requested_duration=total,
+        requested_duration=requested,
         comment=comment or "",
         pdf_file=pdf_file,
         screens=screens,
         debts_snapshot=[],
-        claim_metadata={},
+        claim_metadata={"debt_total": str(total)},
         auto_check_result={},
         fixed_by=user,
     )
 
-    apply_otrabotka_effects(comp, wdds, days, total)
+    apply_otrabotka_effects(comp, wdds, days, day_durations)
 
     # Ретроактивная: оператор уже отработал — проверяем СРАЗУ по факту.
     if retroactive:

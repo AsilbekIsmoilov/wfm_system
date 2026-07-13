@@ -196,6 +196,7 @@ class ApplyRequestView(APIView):
         op = self._op(data["operator_id"])
         comp = accept_otrabotka(
             operator=op, debt_detail_ids=data["debt_detail_ids"], days=data["days"],
+            durations=data.get("durations"),
             comment=data.get("comment", ""), user=None, source=source,
             pdf_file=data.get("pdf_file"), screens=data.get("screens"),
             retroactive=retroactive,
@@ -326,8 +327,9 @@ class EditCompensationView(APIView):
             )
 
         # Faqat berilgan (None emas) maydonlarni uzatamiz — qolgani joriy holatdan.
+        # durations — otrabotka (per-day), applied_duration — debt-justification.
         kwargs = {}
-        for key in ("days", "debt_detail_ids", "applied_duration"):
+        for key in ("days", "debt_detail_ids", "durations", "applied_duration"):
             if data.get(key) is not None:
                 kwargs[key] = data[key]
         if "comment" in data:
