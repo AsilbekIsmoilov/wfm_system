@@ -237,13 +237,18 @@ def push_cycle_to_wfm(cycle=None, include_master=True, full=False) -> dict:
         return out
 
     wfm_client.push("cycles", [_ser_cycle(cycle)])  # cycle: bir nechta qator, doim
-    out["work-debts"] = _push("work-debts", [_ser_work_debt(x) for x in _since_filter(WorkDebt.objects.filter(cycle=cycle), since)])
-    out["work-debt-details"] = _push("work-debt-details", [_ser_detail(x) for x in _since_filter(WorkDebtDetail.objects.filter(cycle=cycle), since)])
-    out["compensations"] = _push("compensations", [_ser_compensation(x) for x in _since_filter(Compensation.objects.filter(cycle=cycle), since)])
-    out["transfers"] = _push("transfers", [_ser_transfer(x) for x in _since_filter(Transfer.objects.filter(cycle=cycle), since)])
+    # Sikl-scoped yozuvlar (cheklangan — yuzlab) HAR run TO'LIQ yuboriladi
+    # (watermark'siz). Watermark faqat KATTA master data uchun. Sabab: agar push
+    # fail bo'lsa yoki WFM reset bo'lsa, watermark oldinga surilib, o'zgarmagan
+    # yozuvlar hech qachon qayta yuborilmay drift qoladi (reconcile faqat o'chiradi,
+    # qo'shmaydi). To'liq upsert WFM'ni har run Django bilan tenglashtiradi.
+    out["work-debts"] = _push("work-debts", [_ser_work_debt(x) for x in WorkDebt.objects.filter(cycle=cycle)])
+    out["work-debt-details"] = _push("work-debt-details", [_ser_detail(x) for x in WorkDebtDetail.objects.filter(cycle=cycle)])
+    out["compensations"] = _push("compensations", [_ser_compensation(x) for x in Compensation.objects.filter(cycle=cycle)])
+    out["transfers"] = _push("transfers", [_ser_transfer(x) for x in Transfer.objects.filter(cycle=cycle)])
     out["compensation-debt-links"] = _push(
         "compensation-debt-links",
-        [_ser_debt_link(x) for x in _since_filter(CompensationDebtLink.objects.filter(compensation__cycle=cycle), since)],
+        [_ser_debt_link(x) for x in CompensationDebtLink.objects.filter(compensation__cycle=cycle)],
     )
 
     # Delete-sync (reconcile): WFM'da bu sikl uchun Django'da endi mavjud bo'lmagan
