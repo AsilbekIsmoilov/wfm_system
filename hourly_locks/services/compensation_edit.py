@@ -76,10 +76,14 @@ def edit_compensation(comp, *, days=None, debt_detail_ids=None,
             comp, days=days, debt_detail_ids=debt_detail_ids,
             durations=durations, comment=comment, user=user,
         )
-    return _edit_debt(
-        comp, debt_detail_ids=debt_detail_ids,
-        applied_duration=applied_duration, comment=comment, user=user,
-    )
+    # Только отработка редактируется. Остальные компенсации (оправдание долга —
+    # авто-одобрение, немедленное списание) НЕ редактируются: правка ломала бы
+    # уже применённый зачёт work_debt.
+    code = comp.type_rule.code if comp.type_rule else None
+    raise CompensationEditError(
+        f"Редактирование доступно только для отработки. Заявку типа «{code}» "
+        "(авто-одобрение) редактировать нельзя.",
+        code="not_editable", payload={"type": code})
 
 
 def _edit_otrabotka(comp, *, days, debt_detail_ids, durations, comment, user):

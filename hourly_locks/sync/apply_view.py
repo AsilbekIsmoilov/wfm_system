@@ -30,6 +30,7 @@ from rest_framework import status as http_status
 from .service_auth import HasServiceToken
 
 from hourly_locks.models import Operator, Compensation, Transfer, WorkDebt
+from hourly_locks.utils import format_duration
 
 
 def _td_to_min(td):
@@ -44,8 +45,9 @@ def _work_debt_payload(operator, cycle):
         "external_id": wd.id,
         "operator_id": operator.id,
         "cycle_id": cycle.id,
-        "current_debt": _td_to_min(wd.current_debt),
-        "total_accumulated": _td_to_min(wd.total_accumulated),
+        # HH:MM:SS (WFM parses to seconds); other duration fields stay minutes.
+        "current_debt": format_duration(wd.current_debt),
+        "total_accumulated": format_duration(wd.total_accumulated),
     }
 
 

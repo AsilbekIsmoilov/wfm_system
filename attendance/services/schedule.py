@@ -35,7 +35,10 @@ def get_today_scheduled_operators():
         if not shift or not shift.start_time or not shift.end_time:
             continue
         op = sd.operator
+        # For parsing (start/end hours -> scheduled_start, night-shift detection).
         op._schedule_value = f"{shift.start_time.hour}-{shift.end_time.hour}"
+        # For display: the real shift code (e.g. "15-24"), falls back to the pair.
+        op._schedule_code = shift.code or op._schedule_value
         result.append(op)
 
     return result

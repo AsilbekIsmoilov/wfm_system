@@ -285,7 +285,7 @@ def build_attendance(now=None):
             result.append({
                 "login": login,
                 "name": f"{op.surname} {op.name} {op.middle_name or ''}".strip(),
-                "schedule": op._schedule_value,
+                "schedule": op._schedule_code,
                 "scheduled_start": scheduled_start.strftime("%H:%M"),
                 "status": status,
                 "login_time": login_time,

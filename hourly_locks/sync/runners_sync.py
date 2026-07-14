@@ -2,7 +2,9 @@
 Runner -> WFM push (Oqim C) for ALL operators-module models (two-way sync).
 Call push_cycle_to_wfm() at the END of each runner.
 
-Durations -> minutes; times -> 'HH:MM'; dates -> ISO. Upsert key on WFM side = external_id.
+Durations -> minutes, EXCEPT work_debt(current_debt/total_accumulated) and
+work_debt_detail(norm/fact/debt/make_up_wh) which go as 'HH:MM:SS' (WFM stores seconds).
+Times -> 'HH:MM'; dates -> ISO. Upsert key on WFM side = external_id.
 """
 import logging
 
@@ -40,6 +42,7 @@ def _save_watermark(dt):
 def _since_filter(qs, since):
     return qs.filter(updated_at__gt=since) if since else qs
 from . import wfm_client
+from ..utils import format_duration
 
 logger = logging.getLogger("wfm_sync")
 CHUNK = 500
@@ -136,7 +139,9 @@ def _ser_cycle(c):
 def _ser_work_debt(w):
     return {
         "external_id": w.id, "operator_id": w.operator_id, "cycle_id": w.cycle_id,
-        "current_debt": _min(w.current_debt), "total_accumulated": _min(w.total_accumulated),
+        # HH:MM:SS (WFM parses to seconds); other duration fields stay minutes.
+        "current_debt": format_duration(w.current_debt),
+        "total_accumulated": format_duration(w.total_accumulated),
     }
 
 
@@ -145,13 +150,27 @@ def _ser_detail(d):
         "external_id": d.id, "operator_id": d.operator_id, "cycle_id": d.cycle_id,
         "day": _iso(d.day), "source": d.source, "source_object_id": d.source_object_id,
         "shift_id": d.shift_id, "shift_code_snapshot": d.shift_code_snapshot, "violation_type": d.violation_type,
-        "norm_full": _min(d.norm_full), "fact_full": _min(d.fact_full), "debt_full": _min(d.debt_full),
-        "norm_lock": _min(d.norm_lock), "fact_lock": _min(d.fact_lock), "debt_lock": _min(d.debt_lock),
-        "make_up_wh": _min(d.make_up_wh), "locked_for_compensation": d.locked_for_compensation, "note": d.note,
+        # HH:MM:SS (WFM parses to seconds); other duration fields stay minutes.
+        "norm_full": format_duration(d.norm_full), "fact_full": format_duration(d.fact_full),
+        "debt_full": format_duration(d.debt_full), "norm_lock": format_duration(d.norm_lock),
+        "fact_lock": format_duration(d.fact_lock), "debt_lock": format_duration(d.debt_lock),
+        "make_up_wh": format_duration(d.make_up_wh), "locked_for_compensation": d.locked_for_compensation,
+        "note": d.note,
     }
 
 
 def _ser_compensation(c):
+    # Frontend uchun BIR XIL days[]/durations[] tuzilishi (HH:MM:SS, bir tartibda):
+    #   - otrabotka        → CompensationDay (work-off kunlari va per-day davomiylik);
+    #   - auto-approve      → CompensationDay yo'q, shuning uchun days=[planned_date],
+    #     (debt-justification)  durations=[verified_duration] bilan to'ldiramiz.
+    comp_days = list(c.days.all().order_by("day"))
+    if comp_days:
+        days = [_iso(d.day) for d in comp_days]
+        durations = [format_duration(d.allocated_duration) for d in comp_days]
+    else:
+        days = [_iso(c.planned_date)] if c.planned_date else []
+        durations = [format_duration(c.verified_duration)] if c.verified_duration else []
     return {
         "external_id": c.id, "operator_id": c.operator_id, "cycle_id": c.cycle_id, "status": c.status,
         "comment": c.comment, "verified_at": c.verified_at.isoformat() if c.verified_at else None,
@@ -161,6 +180,9 @@ def _ser_compensation(c):
         "verified_duration": _min(c.verified_duration) if c.verified_duration else None,
         "remaining_debt": _min(c.remaining_debt) if c.remaining_debt else None,
         "deducted": c.deducted, "correlation_id": getattr(c, "correlation_id", None),
+        # WFM shu maydonlarni ko'rsatadi — days va durations (HH:MM:SS) bir xil tartibda.
+        "days": days,
+        "durations": durations,
     }
 
 
@@ -285,5 +307,18 @@ def push_after_apply(operator_ids, cycle) -> dict:
         out["compensation-debt-links"] = _push("compensation-debt-links", [
             _ser_debt_link(x) for x in CompensationDebtLink.objects.filter(
                 compensation__operator_id__in=ops, compensation__cycle=cycle)])
+        # Delete-sync (reconcile): tahrirlash link'larni churn qiladi (revert
+        # delete + reapply create → yangi PK). Upsert-only push eski PK'larni
+        # WFM'da qoldiradi → debt_detail_ids dublikat bo'lib o'sadi. Shu operator(lar)
+        # compensationlari bo'yicha WFM'dagi ortiqcha link'larni prune qilamiz.
+        comp_ids = list(Compensation.objects.filter(
+            operator_id__in=ops, cycle=cycle).values_list("id", flat=True))
+        out["reconcile"] = {
+            "compensation-debt-links": _reconcile(
+                "compensation-debt-links",
+                CompensationDebtLink.objects.filter(
+                    compensation__operator_id__in=ops, compensation__cycle=cycle),
+                compensation_ids=comp_ids),
+        }
     logger.info("push_after_apply (operators=%s): %s", ops, out)
     return out

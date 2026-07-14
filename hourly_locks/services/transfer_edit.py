@@ -13,9 +13,13 @@
   • остальные (льготы, hoz_raboty, perenos_dnya, isklyuchenie, ...) — правим
     дни/часы/подтип; пересоздаётся BenefitDay; авто-approved.
 
-Guard: completed / declined — редактирование запрещено (терминальные статусы).
+Guard: completed / declined — редактирование запрещено (терминальные статусы);
+а также если дата окончания заявки (date_to) уже прошла (сегодня > date_to) —
+период завершён, править нельзя.
 Пропущенные поля берутся из текущей заявки.
 """
+from datetime import date
+
 from django.db import transaction
 
 from ..models import Transfer
@@ -76,6 +80,13 @@ def edit_transfer(transfer, *, days=None, hour_from=None, hour_to=None,
         raise TransferEditError(
             f"Заявку в статусе «{transfer.status}» редактировать нельзя.",
             code="not_editable", payload={"status": transfer.status})
+
+    # Дата окончания уже прошла → период завершён, править нельзя.
+    if transfer.date_to and date.today() > transfer.date_to:
+        raise TransferEditError(
+            f"Дата окончания заявки ({transfer.date_to}) уже прошла — "
+            "редактирование невозможно.",
+            code="period_ended", payload={"date_to": str(transfer.date_to)})
 
     if code == OTPR_CODE:
         return _edit_otprashivanie(
