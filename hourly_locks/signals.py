@@ -77,6 +77,44 @@ def clear_system_policy_cache(sender, instance, **kwargs):
 
 
 # =============================================================================
+# WorkDebt konsistentligi: WDD o'chirilganda WorkDebt'ni qayta hisoblash
+# =============================================================================
+
+# Ommaviy o'chirishда (arxivlash) har WDD uchun recompute qilmaslik uchun toggle.
+_skip_wdd_delete_recompute = False
+
+
+def skip_wdd_delete_recompute(value: bool):
+    """Arxivlash/ommaviy tozalash paytida WDD-delete signal-recompute'ni o'chirish."""
+    global _skip_wdd_delete_recompute
+    _skip_wdd_delete_recompute = value
+
+
+@receiver(post_delete, sender=WorkDebtDetail)
+def recompute_workdebt_on_wdd_delete(sender, instance, **kwargs):
+    """
+    WDD o'chirilganda operatorning WorkDebt'ini qayta hisoblaydi.
+    Kafolat: WDD yo'q bo'lsa (yoki kamaysa) WorkDebt.current_debt = 0 (yoki mos qiymat).
+    Aks holda WDD o'chib, WorkDebt eski qiymatda qolib ketardi (stale).
+    Ommaviy tozalash (arxivlash) paytida skip_wdd_delete_recompute(True) bilan o'chiriladi.
+    """
+    if _skip_wdd_delete_recompute:
+        return
+    op_id = getattr(instance, "operator_id", None)
+    cyc_id = getattr(instance, "cycle_id", None)
+    if not op_id or not cyc_id:
+        return
+    try:
+        from .models import Cycle
+        from .services.work_debt import recompute_for_operators
+        cycle = Cycle.objects.filter(id=cyc_id).first()
+        if cycle:
+            recompute_for_operators([op_id], cycle)
+    except Exception as exc:
+        logger.exception("[wdd_delete_recompute] Xato (op=%s): %s", op_id, exc)
+
+
+# =============================================================================
 # Auto-approve Compensation pri sozdanii (universal — admin/API/ORM)
 # =============================================================================
 

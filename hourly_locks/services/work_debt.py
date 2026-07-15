@@ -135,3 +135,20 @@ def recompute_for_date(for_date) -> dict:
     ).values_list("operator_id", flat=True))
 
     return recompute_for_operators(op_ids, cycle)
+
+
+def recompute_all_for_cycle(cycle) -> dict:
+    """
+    TO'LIQ consistency-recompute: siklda WorkDebt YOKI WorkDebtDetail'i bor BARCHA
+    operatorlarni qayta hisoblaydi.
+
+    - WDD'i bor → WorkDebt = WDD'lar yig'indisi (shortfall/remainder istisnolari bilan).
+    - WDD'i YO'Q, lekin WorkDebt bor (stale) → current_debt = 0.
+
+    recompute_for_date faqat SHU kun WDD'i bor operatorlarni oladi; bu esa
+    WDD'i o'chirilib, bugun faoliyatsiz operatorlarni ham qamrab, stale WorkDebt'ni
+    tozalaydi. Kunlik runner oxirida (safety net) chaqiriladi.
+    """
+    op_ids = set(WorkDebt.objects.filter(cycle=cycle).values_list("operator_id", flat=True))
+    op_ids |= set(WorkDebtDetail.objects.filter(cycle=cycle).values_list("operator_id", flat=True))
+    return recompute_for_operators(op_ids, cycle)

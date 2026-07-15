@@ -158,6 +158,19 @@ def calculate_work_debts(for_date: date) -> dict:
       3. Пропускаем 20-08 с компенсацией (обрабатывается ночным конвейером).
       4. Для остальных — check_debt_for_log → создание WorkDebtDetail.
     """
+    # Pipeline ichida WDD create/update/delete ko'p bo'ladi; funksiya oxirida
+    # recompute_for_date baribir WorkDebt'ni BIR MARTA yangilaydi. Shuning uchun
+    # WDD-delete signal-recompute'ni o'chiramiz (takroriy hisobni oldini olish).
+    # Signal esa faqat QO'LDA (pipeline'dan tashqari) o'chirish uchun qoladi.
+    from hourly_locks.signals import skip_wdd_delete_recompute
+    skip_wdd_delete_recompute(True)
+    try:
+        return _calculate_work_debts_inner(for_date)
+    finally:
+        skip_wdd_delete_recompute(False)
+
+
+def _calculate_work_debts_inner(for_date: date) -> dict:
     cycle = get_or_create_active_cycle()
 
     if not cycle.contains(for_date):

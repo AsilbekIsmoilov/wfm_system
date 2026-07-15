@@ -183,11 +183,15 @@ def run(target_date: date, skip_sheets: bool = False) -> dict:
     _step(result, "time_offs", f"9. Time-off za {target_date}",
           lambda: transfer_verifier.apply_time_off_extended_window(target_date))
 
-    # 10. Финальный пересчёт долгов (safety net)
+    # 10. Финальный пересчёт долгов (safety net) — TO'LIQ: siklda WorkDebt yoki
+    #     WorkDebtDetail'i bor BARCHA operatorlar. Shunda WDD o'chirilib qolgan
+    #     (stale) WorkDebt ham 0 ga tushadi — WDD yo'q → WorkDebt = 0 kafolati.
     def _recompute():
-        from hourly_locks.services.work_debt import recompute_for_date
-        return recompute_for_date(target_date)
-    _step(result, "work_debt_recompute", f"10. Yakuniy recompute za {target_date}", _recompute)
+        from hourly_locks.services.work_debt import recompute_all_for_cycle
+        from hourly_locks.services.cycle import get_cycle_for_date, get_or_create_active_cycle
+        cycle = get_cycle_for_date(target_date) or get_or_create_active_cycle()
+        return recompute_all_for_cycle(cycle)
+    _step(result, "work_debt_recompute", f"10. Yakuniy TO'LIQ recompute za {target_date}", _recompute)
 
     result["status"] = "completed"
 

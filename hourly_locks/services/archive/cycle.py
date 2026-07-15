@@ -319,6 +319,17 @@ def _cleanup_default_db(cycle: Cycle):
     """
     logger.info("[archive_cycle] Очистка default DB для цикла %s", cycle)
 
+    # Ommaviy o'chirish — har WDD uchun signal-recompute qilmaymiz (WorkDebt baribir
+    # shu yerda o'chiriladi). Aks holda minglab recompute sikl-yopishni sekinlashtiradi.
+    from hourly_locks.signals import skip_wdd_delete_recompute
+    skip_wdd_delete_recompute(True)
+    try:
+        _cleanup_default_db_inner(cycle)
+    finally:
+        skip_wdd_delete_recompute(False)
+
+
+def _cleanup_default_db_inner(cycle: Cycle):
     # 1. CompensationDebtLink (через каскад от Compensation, но на всякий случай)
     CompensationDebtLink.objects.filter(compensation__cycle=cycle).delete()
 
