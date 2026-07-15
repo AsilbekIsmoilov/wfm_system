@@ -31,7 +31,7 @@ def verify_compensations(for_date):
     cycle = get_or_create_active_cycle()
     rolled_back = rollback_compensations_for_date(for_date)
     if rolled_back:
-        logger.info("[verify_compensations] Otkacheno %d", rolled_back)
+        logger.info("[verify_compensations] Откачено %d", rolled_back)
 
     # Otrabotka'ni ISTISNO qilamiz — u alohida `verify_due_otrabotka` (per-day,
     # oxirgi kun o'tgach) bilan tekshiriladi. Aks holda bu eski, planned_date
@@ -208,7 +208,7 @@ def _verify_schedule_based(compensation, for_date, cycle, fact_full, fact_lock):
         operator=operator, day=for_date,
     ).select_related("shift").first()
     if not schedule or not schedule.shift:
-        return _mark_declined(compensation, "Net raspisaniya")
+        return _mark_declined(compensation, "Нет расписания")
 
     shift = schedule.shift
 
@@ -252,8 +252,8 @@ def _verify_net_based(compensation, for_date, cycle, fact_full, fact_lock):
     if not is_day_off:
         return _mark_declined(
             compensation,
-            "NB-kompensatsiya faqat dam olish kunida bajariladi. "
-            "Bu kun ({}) uchun smena: {}.".format(
+            "NB-компенсация выполняется только в выходной день. "
+            "Смена в этот день ({}): {}.".format(
                 for_date, schedule.shift.code if schedule and schedule.shift else "?"
             ),
         )
@@ -427,7 +427,7 @@ def _apply_debt_links(compensation, credit, cycle):
             link.save(update_fields=["applied", "applied_amount", "updated_at"])
 
             wdd.locked_for_compensation = True
-            note_extra = "\nZakryto zayavkoy #{} ({}): {}".format(
+            note_extra = "\nЗакрыто заявкой #{} ({}): {}".format(
                 compensation.id, compensation.planned_date, applied,
             )
             wdd.note = (wdd.note or "") + note_extra

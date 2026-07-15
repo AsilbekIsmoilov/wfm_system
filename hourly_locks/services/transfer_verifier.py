@@ -59,7 +59,7 @@ def verify_transfers_for_date(for_date):
     cycle = get_or_create_active_cycle()
     rolled_back = rollback_transfers_for_date(for_date)
     if rolled_back:
-        logger.info("[verify_transfers] Otkacheno %d transfers", rolled_back)
+        logger.info("[verify_transfers] Откачено %d transfers", rolled_back)
 
     transfers = Transfer.objects.filter(
         date_to=for_date,
@@ -81,7 +81,7 @@ def verify_transfers_for_date(for_date):
 
     log_event(
         event_type="transfer_completed", level="info",
-        message="Proverka perenosov", cycle=cycle, payload=stats,
+        message="Проверка переносов", cycle=cycle, payload=stats,
     )
 
     from .work_debt import recompute_for_date
@@ -195,12 +195,12 @@ def _verify_single_transfer(transfer, cycle):
                 violation = "exceeding_break"
 
             note = (
-                "Perenos smeny ({status})\n"
-                "Smena {from_d} ({code}): norm_full {norm}, norm_lock {nl} (warn {wa})\n"
-                "Fakt {from_d}: full={ff_from}, lock={fl_from}\n"
-                "Fakt {to_d}: full={ff_to}, lock={fl_to}\n"
-                "Jami: full={ff_total}, lock={fl_total}\n"
-                "Qarz: full={fd}, lock={ld}, jami={debt}"
+                "Перенос смены ({status})\n"
+                "Смена {from_d} ({code}): norm_full {norm}, norm_lock {nl} (warn {wa})\n"
+                "Факт {from_d}: full={ff_from}, lock={fl_from}\n"
+                "Факт {to_d}: full={ff_to}, lock={fl_to}\n"
+                "Итого: full={ff_total}, lock={fl_total}\n"
+                "Долг: full={fd}, lock={ld}, всего={debt}"
             ).format(
                 status=status, from_d=transfer.date_from, to_d=transfer.date_to,
                 code=shift_obj.code, norm=norm_full, nl=norm_lock, wa=warn_at,
@@ -245,7 +245,7 @@ def apply_time_off_extended_window(for_date):
     cycle = get_or_create_active_cycle()
     rolled_back = rollback_time_offs_for_date(for_date)
     if rolled_back:
-        logger.info("[apply_time_off] Otkacheno %d time_off", rolled_back)
+        logger.info("[apply_time_off] Откачено %d time_off", rolled_back)
 
     time_offs = Transfer.objects.filter(
         type_rule__code="time_off",
