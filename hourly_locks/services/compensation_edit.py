@@ -80,8 +80,12 @@ def edit_compensation(comp, *, days=None, debt_detail_ids=None,
     # авто-одобрение, немедленное списание) НЕ редактируются: правка ломала бы
     # уже применённый зачёт work_debt.
     code = comp.type_rule.code if comp.type_rule else None
+    name = comp.type_rule.display_name if comp.type_rule else (code or "?")
+    from ..models import RequestTypeRule
+    otr_name = RequestTypeRule.objects.filter(
+        code=OTRABOTKA_CODE).values_list("display_name", flat=True).first() or "Отработка"
     raise CompensationEditError(
-        f"Редактирование доступно только для отработки. Заявку типа «{code}» "
+        f"Редактирование доступно только для «{otr_name}». Заявку типа «{name}» "
         "(авто-одобрение) редактировать нельзя.",
         code="not_editable", payload={"type": code})
 
