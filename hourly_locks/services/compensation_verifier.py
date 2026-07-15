@@ -33,9 +33,13 @@ def verify_compensations(for_date):
     if rolled_back:
         logger.info("[verify_compensations] Otkacheno %d", rolled_back)
 
+    # Otrabotka'ni ISTISNO qilamiz — u alohida `verify_due_otrabotka` (per-day,
+    # oxirgi kun o'tgach) bilan tekshiriladi. Aks holda bu eski, planned_date
+    # bo'yicha bitta kunlik tekshiruv ko'p-kunli otrabotka'ni erta va noto'g'ri
+    # rad qilib, CompensationDay'larni pending'da qoldiradi.
     plans = Compensation.objects.filter(
         planned_date=for_date, status="pending",
-    ).select_related("operator", "type_rule")
+    ).exclude(type_rule__code="otrabotka").select_related("operator", "type_rule")
 
     if not plans.exists():
         # Rollback bo'lgan bo'lsa ham — recompute zarur
