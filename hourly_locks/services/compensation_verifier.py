@@ -498,10 +498,16 @@ def _apply_to_archive(link, snapshot, operator, available_credit, compensation):
 
 
 def _mark_declined(compensation, reason):
+    # comment — FAQAT user qiymati; tizim unga yozmaydi. Rad sababini tizim
+    # maydoni auto_check_result'da saqlaymiz (comment/note emas).
     compensation.status = "declined"
-    compensation.comment = (compensation.comment or "") + "\nOtklonenо: " + reason
     compensation.verified_at = now()
-    compensation.save(update_fields=["status", "comment", "verified_at", "updated_at"])
+    meta = dict(compensation.auto_check_result or {})
+    meta["decline_reason"] = reason
+    compensation.auto_check_result = meta
+    compensation.save(update_fields=[
+        "status", "verified_at", "auto_check_result", "updated_at",
+    ])
     return "declined"
 
 

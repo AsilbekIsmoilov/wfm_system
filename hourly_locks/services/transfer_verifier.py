@@ -116,10 +116,10 @@ def _verify_single_transfer(transfer, cycle):
     ).select_related("shift").first()
 
     if not src_schedule or not src_schedule.shift:
+        # comment — faqat user qiymati; tizim unga yozmaydi.
         transfer.status = "declined"
-        transfer.comment = (transfer.comment or "") + "\nNet smeny na date_from"
         transfer.verified_at = now()
-        transfer.save(update_fields=["status", "comment", "verified_at", "updated_at"])
+        transfer.save(update_fields=["status", "verified_at", "updated_at"])
         return "declined"
 
     shift_obj = src_schedule.shift
@@ -134,12 +134,10 @@ def _verify_single_transfer(transfer, cycle):
     fact_lock = fact_lock_from + fact_lock_to
 
     if fact_full <= timedelta(0):
+        # comment — faqat user qiymati; tizim unga yozmaydi.
         transfer.status = "declined"
-        transfer.comment = (transfer.comment or "") + (
-            "\nNet raboty ni v {} ni v {}".format(transfer.date_from, transfer.date_to)
-        )
         transfer.verified_at = now()
-        transfer.save(update_fields=["status", "comment", "verified_at", "updated_at"])
+        transfer.save(update_fields=["status", "verified_at", "updated_at"])
         return "declined"
 
     # === Full duration tekshiruvi ===

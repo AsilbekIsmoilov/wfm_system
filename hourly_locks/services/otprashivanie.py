@@ -282,7 +282,8 @@ def apply_otprashivanie_effects(tr, operator, ctx, comment=None, user=None):
     comp.status = "pending"
     comp.planned_date = min(workoff_days)
     comp.requested_duration = total
-    comp.comment = f"Отработка отпрашивания (заявка #{tr.id})"
+    # comment — tizim yozmaydi (faqat user qiymati). Otprashivanie bog'lanishi
+    # claim_metadata.otprashivanie_transfer_id'da saqlanadi.
     comp.debts_snapshot = []
     comp.claim_metadata = {"otprashivanie_transfer_id": tr.id}
     comp.auto_check_result = {}
