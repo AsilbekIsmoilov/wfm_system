@@ -214,3 +214,23 @@ def _edit_debt(comp, *, debt_detail_ids, applied_duration, comment, user):
     recompute_for_operator(operator, cycle)
     comp.refresh_from_db()
     return comp
+
+
+def revert_compensation_for_delete(comp):
+    """При УДАЛЕНИИ заявки-компенсации: вернуть (разблокировать) ВСЕ её WDD и
+    удалить запись-остаток (для оправдания долга). CompensationDay и
+    CompensationDebtLink удалит CASCADE; пересчёт долга — в сигнале post_delete
+    (после каскадного удаления applied-связок). Идемпотентно."""
+    from ..models import WorkDebtDetail, CompensationDebtLink
+    from .debt_compensation import REMAINDER_SOURCE
+    for link in CompensationDebtLink.objects.filter(
+        compensation=comp,
+    ).select_related("debt_detail"):
+        w = link.debt_detail
+        if w and w.locked_for_compensation:
+            w.locked_for_compensation = False
+            w.save(update_fields=["locked_for_compensation", "updated_at"])
+    # запись-остаток, созданную этой заявкой (только у оправдания)
+    WorkDebtDetail.objects.filter(
+        source=REMAINDER_SOURCE, source_object_id=comp.id,
+    ).delete()

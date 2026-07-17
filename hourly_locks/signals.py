@@ -11,7 +11,7 @@
 import logging
 
 from django.core.cache import cache
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_delete, post_save, pre_delete
 from django.dispatch import receiver
 
 from .models import (
@@ -112,6 +112,46 @@ def recompute_workdebt_on_wdd_delete(sender, instance, **kwargs):
             recompute_for_operators([op_id], cycle)
     except Exception as exc:
         logger.exception("[wdd_delete_recompute] Xato (op=%s): %s", op_id, exc)
+
+
+# =============================================================================
+# Удаление заявки-компенсации: возврат (разблокировка) её WDD + пересчёт долга
+# =============================================================================
+
+@receiver(pre_delete, sender=Compensation)
+def revert_compensation_on_delete(sender, instance, **kwargs):
+    """ДО удаления заявки: разблокировать ВСЕ её WDD и удалить запись-остаток
+    (пока связки ещё существуют). Пересчёт долга — в post_delete (после каскада).
+    Покрывает любой путь удаления: WFM-sync, админка, ORM.
+    При архивации связки уже удалены раньше → фактически no-op."""
+    if _skip_wdd_delete_recompute:
+        return
+    try:
+        from .services.compensation_edit import revert_compensation_for_delete
+        revert_compensation_for_delete(instance)
+    except Exception as exc:
+        logger.exception("[compensation_delete_revert] Xato (comp=%s): %s",
+                         getattr(instance, "id", None), exc)
+
+
+@receiver(post_delete, sender=Compensation)
+def recompute_on_compensation_delete(sender, instance, **kwargs):
+    """ПОСЛЕ удаления заявки (applied-связки удалены каскадом) — пересчитать долг
+    оператора: снятый заявкой зачёт возвращается в current_debt."""
+    if _skip_wdd_delete_recompute:
+        return
+    op_id = getattr(instance, "operator_id", None)
+    cyc_id = getattr(instance, "cycle_id", None)
+    if not op_id or not cyc_id:
+        return
+    try:
+        from .models import Cycle
+        from .services.work_debt import recompute_for_operators
+        cycle = Cycle.objects.filter(id=cyc_id).first()
+        if cycle:
+            recompute_for_operators([op_id], cycle)
+    except Exception as exc:
+        logger.exception("[compensation_delete_recompute] Xato (op=%s): %s", op_id, exc)
 
 
 # =============================================================================

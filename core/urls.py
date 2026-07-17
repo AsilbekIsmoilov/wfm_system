@@ -8,6 +8,10 @@ from hourly_locks.sync.apply_view import (
     EditTransferView,        # WFM -> Python PATCH transfer (edit)
 )
 from hourly_locks.sync.sync_ingest import UpsertView, DeleteView  # WFM -> Python CRUD
+from hourly_locks.sync.action_log_view import (
+    ActionLogIngestView,   # WFM -> Python audit-log (push)
+    ActionLogListView,     # GET: список логов + human-readable summary
+)
 
 
 urlpatterns = [
@@ -18,6 +22,9 @@ urlpatterns = [
     path('api/sync/edit-transfer', EditTransferView.as_view()),
     path('api/sync/upsert/<entity>', UpsertView.as_view()),
     path('api/sync/delete/<entity>', DeleteView.as_view()),
+    path('api/sync/action-log', ActionLogIngestView.as_view()),
+    path('api/action-logs', ActionLogListView.as_view()),
+    path('api/action-logs/', ActionLogListView.as_view()),
     path('', include('hourly_locks.urls')),
     path('api/attendance/v1/', include('attendance.urls')),
 

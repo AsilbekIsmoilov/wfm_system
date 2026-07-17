@@ -601,18 +601,21 @@ class BenefitAcceptSerializer(serializers.Serializer):
     operator_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_empty=True, default=list,
     )
-    select_all_shift = serializers.ChoiceField(
-        choices=["9h"], required=False, allow_null=True,
+    # True = вся смена (кроме 12ч), False/null = по operator_ids.
+    select_all_shift = serializers.BooleanField(
+        required=False, allow_null=True, default=False,
     )
     code = serializers.CharField()
-    subtype = serializers.ChoiceField(
-        choices=["otgul", "korotkiy_den"], required=False, allow_null=True,
-    )
+    # Код подтипа (напр. otgul / korotkiy_den). Допустимость проверяется в
+    # сервисе по каталогу RequestSubtypeRule, привязанному к типу.
+    subtype = serializers.CharField(required=False, allow_null=True)
     days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
     )
     hour_from = serializers.TimeField(required=False, allow_null=True)
     hour_to = serializers.TimeField(required=False, allow_null=True)
+    # Короткий день: длительность 'HH:MM:SS' / 'HH:MM' вместо окна часов.
+    duration = serializers.CharField(required=False, allow_null=True)
     comment = serializers.CharField(required=False, allow_blank=True, default="")
     pdf_file = serializers.FileField(required=False, allow_null=True)
     screens = serializers.ImageField(required=False, allow_null=True)

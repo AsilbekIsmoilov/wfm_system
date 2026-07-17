@@ -45,7 +45,7 @@ def sync_schedules_task(year: int = None, month: int = None):
 # =============================================================================
 
 @shared_task(name="hourly_locks.daily_pipeline")
-def daily_pipeline_task(target_date_iso: str = None, skip_sheets: bool = False):
+def daily_pipeline_task(target_date_iso: str = None, skip_sheets: bool = False, full: bool = False):
     """ЕДИНЫЙ ежедневный конвейер.
 
     Делегирует в daily_runner.run() — ЕДИНЫЙ источник истины (тот же код, что и
@@ -60,7 +60,7 @@ def daily_pipeline_task(target_date_iso: str = None, skip_sheets: bool = False):
 
     logger.info("[daily_pipeline] Старт за %s", target_date)
     from daily_runner import run as run_daily
-    result = run_daily(target_date, skip_sheets=skip_sheets)
+    result = run_daily(target_date, skip_sheets=skip_sheets, full=full)
     logger.info("[daily_pipeline] Завершено: %s", result)
     return result
 

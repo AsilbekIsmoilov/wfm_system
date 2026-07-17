@@ -266,7 +266,8 @@ class ApplyRequestView(APIView):
         result = accept_benefit(
             operators=ops, code=data["code"], subtype=data.get("subtype"),
             days=data["days"], hour_from=data.get("hour_from"),
-            hour_to=data.get("hour_to"), comment=data.get("comment", ""),
+            hour_to=data.get("hour_to"), duration=data.get("duration"),
+            comment=data.get("comment", ""),
             user=None, source=source, pdf_file=data.get("pdf_file"),
             screens=data.get("screens"),
         )
@@ -419,7 +420,7 @@ class EditTransferView(APIView):
             )
 
         kwargs = {}
-        for key in ("days", "workoff_days", "hour_from", "hour_to", "subtype"):
+        for key in ("days", "workoff_days", "hour_from", "hour_to", "subtype", "duration"):
             if data.get(key) is not None:
                 kwargs[key] = data[key]
         if "comment" in data:

@@ -18,7 +18,9 @@ from .models import (
     Note,
     Operator,
     OperatorScheduleDay,
+    RequestActionLog,
     RequestTypeRule,
+    RequestSubtypeRule,
     Shift,
     SystemPolicy,
     Transfer,
@@ -167,8 +169,31 @@ class CycleAdmin(admin.ModelAdmin):
 # RequestTypeRule / SystemPolicy
 # =============================================================================
 
+class RequestSubtypeRuleInline(admin.TabularInline):
+    model = RequestSubtypeRule
+    extra = 0
+    fields = (
+        "code", "display_name", "full_day", "requires_hour_range",
+        "sort_order", "is_active",
+    )
+    ordering = ("sort_order", "code")
+
+
+@admin.register(RequestSubtypeRule)
+class RequestSubtypeRuleAdmin(admin.ModelAdmin):
+    list_display = (
+        "type_rule", "code", "display_name",
+        "full_day", "requires_hour_range", "sort_order", "is_active",
+    )
+    list_filter = ("type_rule", "is_active", "full_day", "requires_hour_range")
+    search_fields = ("code", "display_name", "description")
+    ordering = ("type_rule", "sort_order", "code")
+    autocomplete_fields = ("type_rule",)
+
+
 @admin.register(RequestTypeRule)
 class RequestTypeRuleAdmin(admin.ModelAdmin):
+    inlines = [RequestSubtypeRuleInline]
     list_display = (
         "category", "code", "display_name",
         "verification_strategy",
@@ -458,3 +483,46 @@ class EventLogAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         return False
 
+
+
+@admin.register(RequestActionLog)
+class RequestActionLogAdmin(admin.ModelAdmin):
+    """Аудит-лог действий над заявками (read-only; создаётся в WFM, push в Django)."""
+    list_display = (
+        "created_at", "user_name", "method", "entity_type",
+        "entity_external_id", "status_code", "success",
+    )
+    list_filter = ("method", "entity_type", "success")
+    search_fields = ("user_name", "user_id", "endpoint", "entity_external_id", "wfm_id")
+    date_hierarchy = "created_at"
+    ordering = ("-created_at",)
+    readonly_fields = (
+        "summary_display",
+        "wfm_id", "user_id", "user_name", "method", "entity_type",
+        "entity_external_id", "entity_wfm_id", "endpoint", "payload", "status_code",
+        "success", "created_at",
+    )
+    fields = (
+        "summary_display",
+        "wfm_id", "user_id", "user_name", "method", "entity_type",
+        "entity_external_id", "entity_wfm_id", "endpoint", "status_code", "success",
+        "created_at", "payload",
+    )
+
+    @admin.display(description="Данный")
+    def summary_display(self, obj):
+        from .services.action_log_format import format_action_log
+        return format_html(
+            "<pre style='white-space:pre-wrap;margin:0;font-family:inherit;"
+            "font-size:13px;line-height:1.6'>{}</pre>",
+            format_action_log(obj),
+        )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

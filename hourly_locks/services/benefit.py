@@ -38,7 +38,7 @@ from .otprashivanie import _window_duration, _parse_time, _is_working_day
 ACTIVE_STATUSES = ["pending", "in_progress", "approved", "partial", "completed"]
 
 BENEFIT_CODES = [
-    "isklyuchenie", "obuchenie",
+    "isklyuchenie", "training_on_duty", "training_on_errors",
     "lgota", "lgota_brak", "lgota_rojdenie", "lgota_utrata",
     "lgota_pereezd", "lgota_prochie",
     "hoz_raboty",
@@ -50,7 +50,7 @@ CONFLICT_MAP = {
     "hoz_raboty": ["perenos_dnya"],
 }
 
-PROCHIE_SUBTYPES = ["otgul", "korotkiy_den"]
+# Подтипы теперь data-driven: см. модель RequestSubtypeRule (rule.subtypes).
 
 # «все операторы 9ч смены» = ВСЕ смены КРОМЕ 12-часовых.
 TWELVE_HOURS = timedelta(hours=12)
@@ -71,14 +71,10 @@ class BenefitError(Exception):
 
 def resolve_operators(operator_ids, select_all_shift, days) -> list:
     """
-    Операторы: явный список ИЛИ «вся 9ч смена» = ВСЕ операторы со сменой на
-    выбранные дни, КРОМЕ 12-часовых смен (08-20 / 20-08).
+    Операторы: явный список ИЛИ «вся смена» (select_all_shift=True) = ВСЕ операторы
+    со сменой на выбранные дни, КРОМЕ 12-часовых смен (08-20 / 20-08).
     """
     if select_all_shift:
-        if select_all_shift != "9h":
-            raise BenefitError(
-                "Поддерживается только «вся смена (кроме 12ч)».",
-                code="bad_shift_group")
         op_ids = (
             OperatorScheduleDay.objects.filter(
                 day__in=days, is_day_off=False, shift__isnull=False,
@@ -117,7 +113,30 @@ def _normalize_days(days):
     return sorted(out)
 
 
-def _validate_common(code, subtype, days, hour_from, hour_to):
+def _parse_duration(v):
+    """'HH:MM:SS' / 'HH:MM' / 'HH' -> timedelta. None/'' -> None. Для Короткий день:
+    оператор задаёт длительность (напр. '02:00:00' = 2 часа) вместо окна часов."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, timedelta):
+        return v
+    parts = str(v).strip().split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 3:
+        h, m, s = nums
+    elif len(nums) == 2:
+        h, m, s = nums[0], nums[1], 0
+    elif len(nums) == 1:
+        h, m, s = nums[0], 0, 0
+    else:
+        return None
+    return timedelta(hours=h, minutes=m, seconds=s)
+
+
+def _validate_common(code, subtype, days, hour_from, hour_to, duration=None):
     cycle = get_or_create_active_cycle()
 
     if code not in BENEFIT_CODES:
@@ -146,37 +165,57 @@ def _validate_common(code, subtype, days, hour_from, hour_to):
             f"Заявку на прошедший день ({b['day']}) подать нельзя.",
             code="day_in_past", payload={"violations": bad})
 
-    # подтип — только для «Прочие льготы»
-    if code == "lgota_prochie":
-        if subtype not in PROCHIE_SUBTYPES:
+    # Подтип — по каталогу RequestSubtypeRule, привязанному к типу (data-driven).
+    # Если у типа есть активные подтипы — выбор подтипа обязателен; иначе подтипа
+    # нет. Поведение (полный день / нужны часы) берётся из полей подтипа.
+    sub_rules = rule.subtypes.filter(is_active=True)
+    subtype_rule = None
+    if sub_rules.exists():
+        if not subtype:
+            names = ", ".join(sub_rules.values_list("display_name", flat=True))
             raise BenefitError(
-                "Для «Прочие льготы» нужен подтип: Отгул или Короткий день.",
+                f"Для «{rule.display_name}» нужен подтип: {names}.",
                 code="subtype_required")
+        subtype_rule = sub_rules.filter(code=subtype).first()
+        if not subtype_rule:
+            raise BenefitError(
+                f"Неизвестный подтип «{subtype}» для «{rule.display_name}».",
+                code="invalid_subtype")
     else:
-        subtype = None
+        subtype = None  # тип без подтипов
 
     hour_from = _parse_time(hour_from)
     hour_to = _parse_time(hour_to)
+    dur = _parse_duration(duration)  # Короткий день: длительность вместо окна часов
 
-    # Полный день: подтип otgul, ИЛИ часы не заданы.
-    # Короткий день / частичная льгота: нужны часы.
-    if subtype == "otgul":
+    # Полный день: подтип с full_day, ИЛИ (без спец-подтипа) ничего не задано.
+    # Частичный день: длительность (duration) ИЛИ окно часов (hour_from/hour_to).
+    #   Приоритет — у duration; если она задана, часы игнорируются (hf/ht = None).
+    if subtype_rule and subtype_rule.full_day:
         full_day, window = True, None
-    elif subtype == "korotkiy_den":
-        if not (hour_from and hour_to):
+    elif subtype_rule and subtype_rule.requires_hour_range:
+        if dur is not None:
+            full_day, window, hour_from, hour_to = False, dur, None, None
+        elif hour_from and hour_to:
+            full_day, window = False, _window_duration(hour_from, hour_to)
+        else:
             raise BenefitError(
-                "Для «Короткий день» нужно окно часов.", code="hours_required")
-        full_day, window = False, _window_duration(hour_from, hour_to)
+                f"Для «{subtype_rule.display_name}» нужна длительность (duration) "
+                f"или окно часов (hour_from/hour_to).",
+                code="duration_required")
+    elif dur is not None:
+        full_day, window, hour_from, hour_to = False, dur, None, None
     elif hour_from and hour_to:
         full_day, window = False, _window_duration(hour_from, hour_to)
     else:
         full_day, window = True, None  # весь день
 
     if not full_day and window <= timedelta(0):
-        raise BenefitError("Окно часов должно быть больше нуля.", code="bad_hours")
+        raise BenefitError("Длительность должна быть больше нуля.", code="bad_duration")
 
     return {
-        "cycle": cycle, "rule": rule, "days": days, "subtype": subtype,
+        "cycle": cycle, "rule": rule, "days": days,
+        "subtype": subtype, "subtype_rule": subtype_rule,
         "full_day": full_day, "window": window,
         "hour_from": hour_from, "hour_to": hour_to,
     }
@@ -260,8 +299,9 @@ def _operator_plan(operator, ctx, exclude_transfer_id=None):
 # --------------------------------------------------------------------------- #
 
 def preview_benefit(*, operators=None, operator_ids=None, select_all_shift=None,
-                    code, subtype=None, days, hour_from=None, hour_to=None) -> dict:
-    ctx = _validate_common(code, subtype, days, hour_from, hour_to)
+                    code, subtype=None, days, hour_from=None, hour_to=None,
+                    duration=None) -> dict:
+    ctx = _validate_common(code, subtype, days, hour_from, hour_to, duration)
     ops = operators if operators is not None else resolve_operators(
         operator_ids, select_all_shift, ctx["days"])
 
@@ -303,7 +343,7 @@ def apply_benefit_effects(tr, operator, valid_days, ctx):
     tr.hour_to = ht
     tr.requested_duration = total or None
     tr.verified_duration = total or None
-    tr.subtype = ctx["subtype"]
+    tr.subtype_rule = ctx.get("subtype_rule")
     tr.save()
     tr.benefit_days.all().delete()
     for d in valid_days:
@@ -331,14 +371,14 @@ def _accept_request(operator, valid_days, ctx, comment, user, source, pdf_file, 
 
 def accept_benefit(*, operators=None, operator_ids=None, select_all_shift=None,
                    code, subtype=None, days, hour_from=None, hour_to=None,
-                   comment="", user=None, source="requested",
+                   duration=None, comment="", user=None, source="requested",
                    pdf_file=None, screens=None) -> dict:
     """
     Принять заявку-льготу: ОДНА заявка на оператора со всеми его рабочими днями
     (через BenefitDay; непоследовательные дни поддержаны). Выходные/конфликтные
     дни выбрасываются; если у оператора не осталось дней — он пропускается.
     """
-    ctx = _validate_common(code, subtype, days, hour_from, hour_to)
+    ctx = _validate_common(code, subtype, days, hour_from, hour_to, duration)
     ops = operators if operators is not None else resolve_operators(
         operator_ids, select_all_shift, ctx["days"])
     if not ops:

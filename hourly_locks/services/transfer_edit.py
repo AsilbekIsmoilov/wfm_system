@@ -70,7 +70,8 @@ def _wrap(exc):
 
 @transaction.atomic
 def edit_transfer(transfer, *, days=None, hour_from=None, hour_to=None,
-                  workoff_days=None, subtype=None, comment=None, user=None):
+                  workoff_days=None, subtype=None, comment=None, duration=None,
+                  user=None):
     """Редактировать принятый трансфер на том же record. Возвращает dict-результат.
     Ошибки → TransferEditError."""
     transfer = Transfer.objects.select_for_update().get(pk=transfer.pk)
@@ -98,26 +99,34 @@ def edit_transfer(transfer, *, days=None, hour_from=None, hour_to=None,
             comment=comment)
     return _edit_benefit(
         transfer, days=days, hour_from=hour_from, hour_to=hour_to,
-        subtype=subtype, comment=comment)
+        subtype=subtype, comment=comment, duration=duration)
 
 
-def _edit_benefit(transfer, *, days, hour_from, hour_to, subtype, comment):
+def _edit_benefit(transfer, *, days, hour_from, hour_to, subtype, comment,
+                  duration=None):
     op = transfer.operator
     code = transfer.type_rule.code
+    old_days = list(transfer.benefit_days.values_list("day", flat=True))
     if days is None:
-        days = list(transfer.benefit_days.values_list("day", flat=True))
+        days = old_days
     if hour_from is None:
         hour_from = transfer.hour_from
     if hour_to is None:
         hour_to = transfer.hour_to
     if subtype is None:
-        subtype = transfer.subtype
+        subtype = transfer.subtype_rule.code if transfer.subtype_rule_id else None
+    # Короткий день: если новую длительность/часы не передали, а заявка была
+    # duration-based (без окна часов) — берём прежнюю длительность за день
+    # (requested_duration / число дней), чтобы правка (напр. дней) не сломалась.
+    if (duration is None and hour_from is None and hour_to is None
+            and transfer.requested_duration and old_days):
+        duration = transfer.requested_duration / len(old_days)
 
     # Сначала снять свои BenefitDay, иначе _operator_plan сочтёт их «занятыми»
     # (duplicate) и выбросит собственные дни.
     revert_benefit_effects(transfer)
     try:
-        ctx = _validate_benefit(code, subtype, days, hour_from, hour_to)
+        ctx = _validate_benefit(code, subtype, days, hour_from, hour_to, duration)
     except BenefitError as exc:
         raise _wrap(exc)
     valid, dropped = _benefit_plan(op, ctx, exclude_transfer_id=transfer.id)

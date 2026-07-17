@@ -10,7 +10,7 @@ import logging
 
 from django.utils import timezone
 from hourly_locks.models import (
-    Group, Shift, RequestTypeRule, Operator, Cycle,
+    Group, Shift, RequestTypeRule, RequestSubtypeRule, Operator, Cycle,
     WorkDebt, WorkDebtDetail, Compensation, Transfer, CompensationDebtLink,
 )
 
@@ -120,6 +120,15 @@ def _ser_type_rule(r):
     }
 
 
+def _ser_subtype_rule(s):
+    return {
+        "external_id": s.id, "type_rule_id": s.type_rule_id,
+        "code": s.code, "display_name": s.display_name, "description": s.description,
+        "full_day": s.full_day, "requires_hour_range": s.requires_hour_range,
+        "sort_order": s.sort_order, "is_active": s.is_active,
+    }
+
+
 def _ser_operator(o):
     return {
         "external_id": o.id, "login_id": o.login_id, "surname": o.surname, "name": o.name,
@@ -190,6 +199,7 @@ def _ser_transfer(t):
     return {
         "external_id": t.id, "operator_id": t.operator_id, "cycle_id": t.cycle_id, "status": t.status,
         "comment": t.comment, "type_rule_id": t.type_rule_id,
+        "subtype_rule_id": t.subtype_rule_id,  # RequestSubtypeRule PK (напр. Короткий день)
         "date_from": _iso(t.date_from), "date_to": _iso(t.date_to),
         "hour_from": _hhmm(t.hour_from), "hour_to": _hhmm(t.hour_to),
         "requested_duration": _min(t.requested_duration) if t.requested_duration else None,
@@ -213,6 +223,7 @@ def push_master_data(since=None) -> dict:
         "operator-groups": _push("operator-groups", [_ser_group(x) for x in _since_filter(Group.objects.all(), since)]),
         "shifts": _push("shifts", [_ser_shift(x) for x in _since_filter(Shift.objects.all(), since)]),
         "type-rules": _push("type-rules", [_ser_type_rule(x) for x in _since_filter(RequestTypeRule.objects.all(), since)]),
+        "request-subtypes": _push("request-subtypes", [_ser_subtype_rule(x) for x in _since_filter(RequestSubtypeRule.objects.all(), since)]),
         "operators": _push("operators", [_ser_operator(x) for x in _since_filter(Operator.objects.all(), since)]),
     }
     logger.info("WFM master push (since=%s): %s", since, out)

@@ -17,7 +17,9 @@ from datetime import time, timedelta
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from hourly_locks.models import RequestTypeRule, Shift, SystemPolicy
+from hourly_locks.models import (
+    RequestTypeRule, RequestSubtypeRule, Shift, SystemPolicy,
+)
 from hourly_locks.services.cycle import get_or_create_active_cycle
 
 
@@ -53,7 +55,8 @@ _REQUEST_TYPES = [
     # (расширенное окно, services.ucheba), долг если норма не покрыта.
     ("ucheba_rabochee", "Учёба в рабочее время",         "work"),
     ("perenos_dnya",    "Перенос рабочего дня",          "work"),
-    ("obuchenie",       "Обучение",                      "benefit"),
+    ("training_on_duty",   "Обучение на службу",         "benefit"),
+    ("training_on_errors", "Обучение по ошибкам",        "benefit"),
     ("lgota",           "Льгота",                        "benefit"),
     ("lgota_brak",      "Льгота по бракосочетанию",      "benefit"),
     ("lgota_rojdenie",  "Льгота по рождению ребёнка",    "benefit"),
@@ -62,6 +65,17 @@ _REQUEST_TYPES = [
     ("lgota_prochie",   "Прочие льготы",                 "benefit"),
     ("hoz_raboty",      "Хозяйственные работы",          "benefit"),
 ]
+
+# Подтипы заявок: type_code -> [ {code, display_name, full_day,
+# requires_hour_range, sort_order}, ... ]. Привязаны к RequestTypeRule.
+SUBTYPE_RULES = {
+    "lgota_prochie": [
+        dict(code="otgul", display_name="Отгул",
+             full_day=True, requires_hour_range=False, sort_order=10),
+        dict(code="korotkiy_den", display_name="Короткий день",
+             full_day=False, requires_hour_range=True, sort_order=20),
+    ],
+}
 _WORK_FLAGS = dict(
     creates_debt_if_unmet=True, exempts_from_daily_debt=False,
     auto_approve_on_create=False, allows_past_date=False,
@@ -175,12 +189,29 @@ class Command(BaseCommand):
 
         self.stdout.write("Создание правил заявок...")
         for rule_data in REQUEST_TYPE_RULES:
+            # is_active is NOT seeded — admins manage it in Django. New rules take the
+            # model default (True); existing rules keep whatever the admin set.
             RequestTypeRule.objects.update_or_create(
                 category=rule_data["category"],
                 code=rule_data["code"],
-                defaults={**rule_data, "is_active": True},
+                defaults={**rule_data},
             )
         self.stdout.write(self.style.SUCCESS(f"Правила заявок: {len(REQUEST_TYPE_RULES)}"))
+
+        self.stdout.write("Создание подтипов заявок...")
+        n_sub = 0
+        for type_code, subs in SUBTYPE_RULES.items():
+            rule = RequestTypeRule.objects.filter(
+                category="transfer", code=type_code).first()
+            if not rule:
+                continue
+            for s in subs:
+                RequestSubtypeRule.objects.update_or_create(
+                    type_rule=rule, code=s["code"],
+                    defaults={k: v for k, v in s.items() if k != "code"},
+                )
+                n_sub += 1
+        self.stdout.write(self.style.SUCCESS(f"Подтипы заявок: {n_sub}"))
 
         self.stdout.write("Создание системных политик...")
         # СОЗДАЁМ только отсутствующие политики (get_or_create), НЕ перезаписываем

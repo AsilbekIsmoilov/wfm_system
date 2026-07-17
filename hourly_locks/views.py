@@ -1089,6 +1089,7 @@ class RunDailyPipelineView(APIView):
     Дёргать можно ПРОСТО ИЗ БРАУЗЕРА (GET), передав секрет в query:
       GET /api/v1/run-daily-pipeline/?token=<SYNC_SERVICE_TOKEN>
       GET /api/v1/run-daily-pipeline/?token=<...>&date=YYYY-MM-DD&skip_sheets=1
+      GET /api/v1/run-daily-pipeline/?token=<...>&full=1   # WFM'ga TO'LIQ re-push
 
     Или как обычно (POST + JWT admin/manager):
       POST /api/v1/run-daily-pipeline/  {"date": "...", "skip_sheets": false}
@@ -1133,6 +1134,11 @@ class RunDailyPipelineView(APIView):
         run_sync = _as_bool(
             request.query_params.get("sync", request.data.get("sync", False))
         )
+        # full=1 => WFM push ignores the watermark and re-sends EVERYTHING (operators,
+        # groups, type-rules, shifts + cycle data). Use once after a PK reset / drift.
+        full = _as_bool(
+            request.query_params.get("full", request.data.get("full", False))
+        )
 
         # --- Sinxron rejim (?sync=1): Celery'siz, inline. Local uchun. HTTP'ni bloklaydi. ---
         if run_sync:
@@ -1142,12 +1148,13 @@ class RunDailyPipelineView(APIView):
                 date.fromisoformat(target_iso) if target_iso
                 else localdate() - timedelta(days=1)
             )
-            result = run_daily(target_date, skip_sheets=skip_sheets)
+            result = run_daily(target_date, skip_sheets=skip_sheets, full=full)
             return Response(
                 {
                     "detail": "Daily pipeline sinxron bajarildi (inline)",
                     "target_date": str(target_date),
                     "skip_sheets": skip_sheets,
+                    "full": full,
                     "result": result,
                 },
                 status=status.HTTP_200_OK,
@@ -1159,6 +1166,7 @@ class RunDailyPipelineView(APIView):
             async_result = daily_pipeline_task.delay(
                 target_date_iso=target_iso,
                 skip_sheets=skip_sheets,
+                full=full,
             )
         except Exception as exc:  # broker (Redis) ishlamayotgan bo'lsa
             return Response(
@@ -1175,6 +1183,7 @@ class RunDailyPipelineView(APIView):
                 "task_id": async_result.id,
                 "target_date": target_iso or "kecha (default)",
                 "skip_sheets": skip_sheets,
+                "full": full,
             },
             status=status.HTTP_202_ACCEPTED,
         )

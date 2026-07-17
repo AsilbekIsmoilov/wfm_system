@@ -91,8 +91,12 @@ def _in_grafik_window(day: date) -> bool:
     return GRAFIK_SYNC_START_DAY <= day.day <= GRAFIK_SYNC_END_DAY
 
 
-def run(target_date: date, skip_sheets: bool = False) -> dict:
-    """ЕДИНЫЙ ежедневный прогон за target_date. Вызывается и beat'ом, и вручную."""
+def run(target_date: date, skip_sheets: bool = False, full: bool = False) -> dict:
+    """ЕДИНЫЙ ежедневный прогон за target_date. Вызывается и beat'ом, и вручную.
+
+    full=True => WFM push игнорирует watermark и отправляет ВСЁ (operators, groups,
+    type-rules, shifts + cycle data). Нужно один раз после сброса/рассинхрона PK.
+    """
     result = {"target_date": str(target_date)}
     section(f"DAILY RUNNER za {target_date}")
 
@@ -205,7 +209,7 @@ def run(target_date: date, skip_sheets: bool = False) -> dict:
 
     # 11. WFM ga natijani yuborish (Oqim C, инкрементально) — ПЕРЕД ролловером,
     #     чтобы данные последнего дня цикла ушли в WFM до архивации.
-    _step(result, "wfm_push", "11. WFM push (Oqim C)", push_cycle_to_wfm)
+    _step(result, "wfm_push", "11. WFM push (Oqim C)", lambda: push_cycle_to_wfm(full=full))
 
     # 12. Ролловер цикла: закрыть истёкший (end_date < сегодня) и открыть новый
     #     активный. Только для ШТАТНОГО прогона (target = вчера) — для ручного
