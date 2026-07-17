@@ -184,7 +184,22 @@ class DeleteView(APIView):
             qs = Model.objects.filter(correlation_id=corr)
 
         # operator_id ni o'chirishdan OLDIN olamiz (keyin obj bo'lmaydi).
-        op_id = _operator_id_of(entity, qs.first()) if qs is not None else None
+        obj = qs.first() if qs is not None else None
+        op_id = _operator_id_of(entity, obj) if obj is not None else None
+
+        # Guard: заявку ОТРАБОТКИ (otrabotka) после верификации удалять нельзя —
+        # долг уже зачтён/пересчитан, удаление сломало бы учёт. Доступно только
+        # пока pending (как и редактирование). Защита на случай прямого вызова.
+        if entity == "compensations" and obj is not None:
+            tr = getattr(obj, "type_rule", None)
+            if (tr and tr.code == "otrabotka"
+                    and obj.status in {"approved", "partial", "completed"}):
+                return Response(
+                    {"ok": False, "code": "not_deletable",
+                     "message": (
+                         f"Отработку в статусе «{obj.status}» удалить нельзя "
+                         "(доступно только для «pending»).")},
+                    status=http_status.HTTP_409_CONFLICT)
 
         deleted = 0
         if qs is not None:
