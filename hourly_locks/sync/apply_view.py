@@ -37,6 +37,23 @@ def _td_to_min(td):
     return int(td.total_seconds() // 60) if td else 0
 
 
+def _created_by(raw):
+    """
+    WFM konvertidagi `created_by` — {"id": "<mongo ObjectId>", "full_name": "..."}.
+    Django-user emas, shuning uchun FK emas, oddiy snapshot sifatida saqlanadi.
+    Yo'q/buzuq bo'lsa None — ariza baribir yaratiladi (audit maydoni majburiy emas).
+    """
+    if not isinstance(raw, dict):
+        return None
+    author_id = raw.get("id")
+    if not author_id:
+        return None
+    return {
+        "id": str(author_id)[:64],
+        "name": str(raw.get("full_name") or "")[:255] or None,
+    }
+
+
 def _work_debt_payload(operator, cycle):
     wd = WorkDebt.objects.filter(operator=operator, cycle=cycle).first()
     if not wd:
@@ -71,6 +88,9 @@ class ApplyRequestView(APIView):
         correlation_id = data.get("correlation_id") or None
         source = data.get("source") or "requested"
         payload = data.get("payload") or {}
+        # WFM foydalanuvchisi (Django user emas) — konvertda keladi, natijaga
+        # _comp_result/_transfer_result ichida shtamplanadi.
+        self._created_by = _created_by(data.get("created_by"))
 
         if rtype not in self._DISPATCH:
             return Response(
@@ -169,9 +189,17 @@ class ApplyRequestView(APIView):
         return ops
 
     def _comp_result(self, comp, rtype, correlation_id):
+        fields = []
         if correlation_id and not comp.correlation_id:
             comp.correlation_id = correlation_id
-            comp.save(update_fields=["correlation_id"])
+            fields.append("correlation_id")
+        author = getattr(self, "_created_by", None)
+        if author:
+            comp.wfm_created_by_id = author["id"]
+            comp.wfm_created_by_name = author["name"]
+            fields += ["wfm_created_by_id", "wfm_created_by_name"]
+        if fields:
+            comp.save(update_fields=fields)
         return {
             "type": rtype,
             "compensation_id": comp.id,
@@ -182,8 +210,16 @@ class ApplyRequestView(APIView):
     def _transfer_result(self, result, rtype, correlation_id):
         ids = [c.get("transfer_id") for c in (result.get("created") or [])
                if c.get("transfer_id")]
-        if correlation_id and ids:
-            Transfer.objects.filter(id__in=ids).update(correlation_id=correlation_id)
+        if ids:
+            updates = {}
+            if correlation_id:
+                updates["correlation_id"] = correlation_id
+            author = getattr(self, "_created_by", None)
+            if author:
+                updates["wfm_created_by_id"] = author["id"]
+                updates["wfm_created_by_name"] = author["name"]
+            if updates:
+                Transfer.objects.filter(id__in=ids).update(**updates)
         return {"type": rtype, "transfer_ids": ids, "result": result}
 
     # ------------------------------------------------------------------ #

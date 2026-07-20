@@ -1053,6 +1053,22 @@ class BaseWorkRequest(models.Model):
         related_name="+",
     )
 
+    # Заявка, созданная через WFM: автор — пользователь WFM, а не Django-user,
+    # поэтому FK невозможен. Храним снимок (Mongo ObjectId + имя на момент
+    # создания) — только для отображения/аудита, бизнес-логика их не читает.
+    wfm_created_by_id = models.CharField(
+        verbose_name="Кем создана (WFM, id)",
+        max_length=64,
+        null=True,
+        blank=True,
+    )
+    wfm_created_by_name = models.CharField(
+        verbose_name="Кем создана (WFM, ФИО)",
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
     created_at = models.DateTimeField(
         verbose_name="Создана",
         auto_now_add=True,

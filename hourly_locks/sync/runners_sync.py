@@ -69,23 +69,45 @@ def _push(entity, items):
     return len(items)
 
 
-def _reconcile(entity, qs, cycle_id=None, compensation_ids=None):
+def _reconcile(entity, qs, cycle_id=None, compensation_ids=None, all_scope=False):
     """
     Delete-sync: WFM'ga bu scope uchun Django'dagi JORIY external_id ro'yxatini
     yuboradi; WFM ro'yxatda yo'q yozuvlarni prune qiladi (churn-orphan + haqiqiy
     delete + arxiv). To'liq ro'yxat yuborilishi shart — shuning uchun watermark'ga
     bog'liq emas. Xato bo'lsa pipeline'ni buzmaydi (log + davom).
+
+    all_scope=True — master (reference) entitylar uchun: sikl yo'q, shuning uchun
+    butun kolleksiya shu ro'yxatga qarshi tozalanadi. WFM buni faqat whitelist'dagi
+    master entitylar uchun va BO'SH BO'LMAGAN ro'yxatda qabul qiladi.
     """
     body = {"external_ids": list(qs.values_list("id", flat=True))}
     if cycle_id is not None:
         body["cycle_id"] = cycle_id
     if compensation_ids is not None:
         body["compensation_ids"] = list(compensation_ids)
+    if all_scope:
+        body["all"] = True
     try:
         return wfm_client.reconcile(entity, body)
     except Exception as exc:  # WFM o'chgan bo'lsa ham runner davom etsin
         logger.warning("WFM reconcile(%s) xato: %s", entity, exc)
         return None
+
+
+def _reconcile_master() -> dict:
+    """
+    Master entitylar uchun delete-sync. push_master_data watermark bo'yicha FAQAT
+    o'zgarganlarni yuboradi, ya'ni Django'da O'CHIRILGAN operator/guruh/tur WFM'da
+    abadiy qolib ketardi. Bu yerda har run'da to'liq id ro'yxati yuboriladi va WFM
+    ortiqchasini o'chiradi. Ro'yxat bo'sh bo'lsa WFM rad etadi (himoya rail).
+    """
+    return {
+        "operator-groups": _reconcile("operator-groups", Group.objects.all(), all_scope=True),
+        "shifts": _reconcile("shifts", Shift.objects.all(), all_scope=True),
+        "type-rules": _reconcile("type-rules", RequestTypeRule.objects.all(), all_scope=True),
+        "request-subtypes": _reconcile("request-subtypes", RequestSubtypeRule.objects.all(), all_scope=True),
+        "operators": _reconcile("operators", Operator.objects.all(), all_scope=True),
+    }
 
 
 def _ser_group(g):
@@ -226,6 +248,9 @@ def push_master_data(since=None) -> dict:
         "request-subtypes": _push("request-subtypes", [_ser_subtype_rule(x) for x in _since_filter(RequestSubtypeRule.objects.all(), since)]),
         "operators": _push("operators", [_ser_operator(x) for x in _since_filter(Operator.objects.all(), since)]),
     }
+    # Push faqat MAVJUD yozuvlarni yuboradi — o'chirilganini WFM bilmaydi.
+    # Shuning uchun push'dan keyin darhol delete-sync qilamiz.
+    out["reconcile"] = _reconcile_master()
     logger.info("WFM master push (since=%s): %s", since, out)
     return out
 
