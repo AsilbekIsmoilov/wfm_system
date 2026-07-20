@@ -401,12 +401,21 @@ def push_after_apply(operator_ids, cycle) -> dict:
             # WDD'lar ham churn qiladi: qisman oправдание «qoldiq» yozuvi yaratadi
             # (source=compensation_remainder), ariza o'chirilganda/tahrirlanganda esa
             # u Django'da o'chadi. Upsert-only push uni WFM'da qoldirar edi —
-            # natijada qarz oshib ketardi (2s → o'chirgandan keyin 3s). Scope faqat
-            # shu operator(lar) + shu sikl, ya'ni boshqalarnikiga tegmaydi.
+            # natijada qarz oshib ketardi (2s → o'chirgandan keyin 3s).
+            #
+            # Scope ATAYIN faqat operator_ids — cycle_id QO'SHILMAYDI. Sababi deploy
+            # tartibi: operator_ids'ni bilmaydigan ESKI WFM uni jimgina tashlab
+            # yuboradi, va agar cycle_id bo'lsa scope «butun sikl» bo'lib qolardi —
+            # ro'yxatda esa faqat bitta operatorning yozuvlari → QOLGAN HAMMA
+            # operatorning WDD'lari WFM'dan o'chib ketardi. cycle_id'siz esa eski
+            # WFM scope'ni bo'sh deb topib «scope required» xatosi bilan HECH NARSA
+            # o'chirmaydi (xavfsiz no-op), yangi WFM esa to'g'ri ishlaydi.
+            # Shu sababli ro'yxat ham operatorning BARCHA sikllaridagi WDD'lari —
+            # scope sikl bilan chegaralanmagani uchun ro'yxat ham to'liq bo'lishi shart.
             "work-debt-details": _reconcile(
                 "work-debt-details",
-                WorkDebtDetail.objects.filter(operator_id__in=ops, cycle=cycle),
-                cycle_id=cycle.id, operator_ids=ops),
+                WorkDebtDetail.objects.filter(operator_id__in=ops),
+                operator_ids=ops),
         }
     logger.info("push_after_apply (operators=%s): %s", ops, out)
     return out
