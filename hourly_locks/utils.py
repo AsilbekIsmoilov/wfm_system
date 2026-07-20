@@ -124,6 +124,26 @@ def parse_hhmmss(value: str) -> timedelta:
         return timedelta(0)
 
 
+def strip_compensation_note(note: Optional[str], comp_id: int) -> str:
+    """
+    Убрать из note WorkDebtDetail пометки «Перенесён в заявку ... #<comp_id>».
+
+    Пометка дописывается при применении заявки, а редактирование = откат +
+    повторное применение, поэтому без этой очистки каждая правка добавляла бы
+    ещё одну строку и note разрастался бы («#47» семь раз подряд).
+
+    Матчим по «#<id> (» — иначе #47 задело бы и #470.
+    """
+    if not note:
+        return ""
+    marker = f"#{comp_id} ("
+    kept = [
+        line for line in note.splitlines()
+        if not ("Перенесён в заявку" in line and marker in line)
+    ]
+    return "\n".join(kept)
+
+
 def get_system_policy(key: str, default=None):
     """
     Получить значение системной политики по ключу.

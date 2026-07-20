@@ -31,6 +31,7 @@ from ..models import (
     Transfer,
     WorkDebtDetail,
 )
+from ..utils import strip_compensation_note
 from . import notify
 from .cycle import get_or_create_active_cycle
 
@@ -326,9 +327,19 @@ def revert_otrabotka_effects(comp):
         compensation=comp,
     ).select_related("debt_detail"):
         w = link.debt_detail
-        if w and w.locked_for_compensation:
-            w.locked_for_compensation = False
-            w.save(update_fields=["locked_for_compensation", "updated_at"])
+        if w:
+            fields = []
+            if w.locked_for_compensation:
+                w.locked_for_compensation = False
+                fields.append("locked_for_compensation")
+            # Снять и пометку, которую поставило применение — иначе каждая
+            # правка (откат + повторное применение) дописывала бы новую строку.
+            cleaned = strip_compensation_note(w.note, comp.id)
+            if cleaned != (w.note or ""):
+                w.note = cleaned
+                fields.append("note")
+            if fields:
+                w.save(update_fields=[*fields, "updated_at"])
         link.delete()
     if comp.debts_snapshot:
         comp.debts_snapshot = []

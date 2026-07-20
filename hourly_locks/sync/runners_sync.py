@@ -69,7 +69,8 @@ def _push(entity, items):
     return len(items)
 
 
-def _reconcile(entity, qs, cycle_id=None, compensation_ids=None, all_scope=False):
+def _reconcile(entity, qs, cycle_id=None, compensation_ids=None, operator_ids=None,
+               all_scope=False):
     """
     Delete-sync: WFM'ga bu scope uchun Django'dagi JORIY external_id ro'yxatini
     yuboradi; WFM ro'yxatda yo'q yozuvlarni prune qiladi (churn-orphan + haqiqiy
@@ -85,6 +86,8 @@ def _reconcile(entity, qs, cycle_id=None, compensation_ids=None, all_scope=False
         body["cycle_id"] = cycle_id
     if compensation_ids is not None:
         body["compensation_ids"] = list(compensation_ids)
+    if operator_ids is not None:
+        body["operator_ids"] = list(operator_ids)
     if all_scope:
         body["all"] = True
     try:
@@ -395,6 +398,15 @@ def push_after_apply(operator_ids, cycle) -> dict:
                 CompensationDebtLink.objects.filter(
                     compensation__operator_id__in=ops, compensation__cycle=cycle),
                 compensation_ids=comp_ids),
+            # WDD'lar ham churn qiladi: qisman oправдание «qoldiq» yozuvi yaratadi
+            # (source=compensation_remainder), ariza o'chirilganda/tahrirlanganda esa
+            # u Django'da o'chadi. Upsert-only push uni WFM'da qoldirar edi —
+            # natijada qarz oshib ketardi (2s → o'chirgandan keyin 3s). Scope faqat
+            # shu operator(lar) + shu sikl, ya'ni boshqalarnikiga tegmaydi.
+            "work-debt-details": _reconcile(
+                "work-debt-details",
+                WorkDebtDetail.objects.filter(operator_id__in=ops, cycle=cycle),
+                cycle_id=cycle.id, operator_ids=ops),
         }
     logger.info("push_after_apply (operators=%s): %s", ops, out)
     return out
