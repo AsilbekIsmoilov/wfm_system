@@ -277,8 +277,43 @@ def push_cycle_to_wfm(cycle=None, include_master=True, full=False) -> dict:
             compensation_ids=comp_ids),
     }
 
+    # full=True — «режим починки»: реконсайлим и ЗАКРЫТЫЕ циклы. Обычный прогон
+    # скоупится только на активный цикл, поэтому заархивированный цикл иначе
+    # остаётся в WFM навсегда (архивация чистит только default DB Django).
+    if full:
+        out["reconcile_closed"] = _reconcile_closed_cycles(cycle.id)
+
     _save_watermark(started_at)  # keyingi push shu vaqtdan boshlaydi
     logger.info("WFM push (cycle %s, since=%s): %s", cycle.id, since, out)
+    return out
+
+
+def _reconcile_closed_cycles(active_cycle_id) -> dict:
+    """
+    Для каждого НЕ активного цикла отправляем в WFM список того, что реально
+    осталось в Django (обычно пусто) — WFM удаляет всё остальное по этому циклу.
+    Переносимые transfer'ы (pending/in_progress) не пострадают: они попадают в
+    список «осталось».
+    """
+    out = {}
+    closed_ids = list(
+        Cycle.objects.exclude(id=active_cycle_id).values_list("id", flat=True)
+    )
+    for cid in closed_ids:
+        comp_ids = list(Compensation.objects.filter(cycle_id=cid).values_list("id", flat=True))
+        out[cid] = {
+            "work-debts": _reconcile("work-debts", WorkDebt.objects.filter(cycle_id=cid), cycle_id=cid),
+            "work-debt-details": _reconcile("work-debt-details", WorkDebtDetail.objects.filter(cycle_id=cid), cycle_id=cid),
+            "compensations": _reconcile("compensations", Compensation.objects.filter(cycle_id=cid), cycle_id=cid),
+            "transfers": _reconcile("transfers", Transfer.objects.filter(cycle_id=cid), cycle_id=cid),
+        }
+        if comp_ids:
+            out[cid]["compensation-debt-links"] = _reconcile(
+                "compensation-debt-links",
+                CompensationDebtLink.objects.filter(compensation__cycle_id=cid),
+                compensation_ids=comp_ids,
+            )
+    logger.info("WFM reconcile closed cycles: %s", list(out.keys()))
     return out
 
 
