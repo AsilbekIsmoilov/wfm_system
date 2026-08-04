@@ -55,8 +55,15 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const LABELS = {on_time:"On time", late:"Late", lating:"Arriving late", absent:"Absent", wait:"Waiting"};
-const ORDER = ["on_time","late","lating","absent","wait"];
+const LABELS = {on_time:"On time", late:"Late", lating:"Arriving late", absent:"Absent", wait:"Waiting",early_login: "Early login"};
+const ORDER = [
+  "early_login",
+  "on_time",
+  "late",
+  "lating",
+  "absent",
+  "wait"
+];
 let DATA = [];            // last snapshot
 let filterStatus = "";    // chip filter
 let sortKey = "name", sortDir = 1;
@@ -85,7 +92,7 @@ function render(){
   }
 
   // summary
-  const counts = {on_time:0,late:0,lating:0,absent:0,wait:0};
+  const counts = {on_time:0,late:0,lating:0,absent:0,wait:0,early_login: 0};
   DATA.forEach(d => counts[statusKey(d.status)]++);
   $("summary").innerHTML =
     `<div class="chip c-all ${filterStatus===''?'active':''}" data-f="">Total <b>${DATA.length}</b></div>` +

@@ -6,6 +6,7 @@ class AttendanceLog(models.Model):
         ("on_time", "On Time"),
         ("late", "Late"),
         ("absent", "Absent"),
+        ("early_login", "Early Login"),
     ]
 
     operator = models.ForeignKey(
@@ -16,7 +17,7 @@ class AttendanceLog(models.Model):
     date = models.DateField(db_index=True)
     scheduled_start = models.DateTimeField()
     login_time = models.DateTimeField(null=True, blank=True)
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES)
+    status = models.CharField(max_length=11, choices=STATUS_CHOICES)
     delay_minutes = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

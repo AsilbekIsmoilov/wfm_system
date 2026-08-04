@@ -204,7 +204,13 @@ def process_attendance(now=None):
                     (login_time - scheduled_start).total_seconds() // 60
                 )
 
-                status = "on_time" if delay <= 1 else "late"
+                if login_time < scheduled_start:
+                    status = "early_login"
+                elif delay <= ON_TIME_GRACE_MINUTES:
+                    status = "on_time"
+                else:
+                    status = "late"
+                    
 
                 upsert_attendance_log(
                     operator=op,
