@@ -59,7 +59,7 @@ def resolve_live_status(now, scheduled_start, log):
     window_end = scheduled_start + timedelta(minutes=LATE_WINDOW_MINUTES)
 
     if now <= late_start:
-        return None
+        return "waiting"
     elif now <= window_end:
         return "lating"
     else:

@@ -16,7 +16,7 @@
   .chip.active{outline:2px solid #60a5fa}
   .chip b{font-size:15px;margin-left:6px}
   .c-on_time b{color:#4ade80} .c-late b{color:#fb923c} .c-lating b{color:#facc15}
-  .c-absent b{color:#f87171} .c-wait b{color:#94a3b8} .c-all b{color:#e2e8f0}
+  .c-absent b{color:#f87171} .c-waiting b{color:#94a3b8} .c-all b{color:#e2e8f0}
   .wrap{padding:0 18px 24px}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1e293b;white-space:nowrap}
@@ -25,7 +25,7 @@
   .badge{padding:2px 9px;border-radius:12px;font-size:12px;font-weight:600}
   .b-on_time{background:#14532d;color:#4ade80} .b-late{background:#7c2d12;color:#fb923c}
   .b-lating{background:#713f12;color:#facc15} .b-absent{background:#7f1d1d;color:#f87171}
-  .b-wait{background:#1e293b;color:#94a3b8}
+  .b-waiting{background:#1e293b;color:#94a3b8}
   .delay{color:#fb923c}
 </style>
 </head>
@@ -55,20 +55,20 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const LABELS = {on_time:"On time", late:"Late", lating:"Arriving late", absent:"Absent", wait:"Waiting",early_login: "Early login"};
+const LABELS = {on_time:"On time", late:"Late", lating:"Arriving late", absent:"Absent", waiting:"Waiting",early_login: "Early login"};
 const ORDER = [
   "early_login",
   "on_time",
   "late",
   "lating",
   "absent",
-  "wait"
+  "waiting"
 ];
 let DATA = [];            // last snapshot
 let filterStatus = "";    // chip filter
 let sortKey = "name", sortDir = 1;
 
-function statusKey(s){ return s ? s : "wait"; }   // null -> "wait"
+function statusKey(s){ return s ? s : "waiting"; }   // null/bo'sh -> "waiting"
 
 function render(){
   const q = $("q").value.toLowerCase().trim();
@@ -92,7 +92,7 @@ function render(){
   }
 
   // summary
-  const counts = {on_time:0,late:0,lating:0,absent:0,wait:0,early_login: 0};
+  const counts = {on_time:0,late:0,lating:0,absent:0,waiting:0,early_login: 0};
   DATA.forEach(d => counts[statusKey(d.status)]++);
   $("summary").innerHTML =
     `<div class="chip c-all ${filterStatus===''?'active':''}" data-f="">Total <b>${DATA.length}</b></div>` +
