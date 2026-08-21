@@ -16,6 +16,7 @@ from django.dispatch import receiver
 
 from .models import (
     Compensation,
+    Group,
     SystemPolicy,
     Transfer,
     WorkDebt,
@@ -23,6 +24,18 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Инвалидация кэша исключённых групп (group_scope)
+# =============================================================================
+
+@receiver([post_save, post_delete], sender=Group)
+def invalidate_excluded_groups_cache(sender, instance, **kwargs):
+    """Сброс кэша deny-list при любом изменении группы (напр. переключение
+    is_excluded в админке), чтобы шлюз сразу увидел новое состояние."""
+    from .services.group_scope import invalidate_cache
+    invalidate_cache()
 
 
 # =============================================================================

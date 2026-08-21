@@ -74,6 +74,7 @@ def resolve_operators(operator_ids, select_all_shift, days) -> list:
     Операторы: явный список ИЛИ «вся смена» (select_all_shift=True) = ВСЕ операторы
     со сменой на выбранные дни, КРОМЕ 12-часовых смен (08-20 / 20-08).
     """
+    from .group_scope import exclude_operators
     if select_all_shift:
         op_ids = (
             OperatorScheduleDay.objects.filter(
@@ -82,9 +83,12 @@ def resolve_operators(operator_ids, select_all_shift, days) -> list:
             .exclude(shift__norm_full=TWELVE_HOURS)
             .values_list("operator_id", flat=True).distinct()
         )
-        return list(Operator.objects.filter(id__in=op_ids, is_active=True))
+        return list(exclude_operators(
+            Operator.objects.filter(id__in=op_ids, is_active=True)))
 
-    return list(Operator.objects.filter(id__in=(operator_ids or []), is_active=True))
+    # Явный список операторов: исключённые группы (deny-list) отсеиваем.
+    return list(exclude_operators(
+        Operator.objects.filter(id__in=(operator_ids or []), is_active=True)))
 
 
 # --------------------------------------------------------------------------- #

@@ -173,10 +173,12 @@ class ApplyRequestView(APIView):
 
     def _op(self, operator_id):
         try:
-            return Operator.objects.get(id=operator_id)
+            op = Operator.objects.get(id=operator_id)
         except Operator.DoesNotExist:
             raise _ApplyError(f"operator topilmadi: {operator_id}", code="operator_not_found",
                               http_status=http_status.HTTP_404_NOT_FOUND)
+        self._assert_group_allowed(op)
+        return op
 
     def _ops(self, operator_ids):
         ops = list(Operator.objects.filter(id__in=operator_ids))
@@ -186,7 +188,20 @@ class ApplyRequestView(APIView):
             raise _ApplyError(f"operatorlar topilmadi: {missing}",
                               code="operator_not_found",
                               http_status=http_status.HTTP_404_NOT_FOUND)
+        for op in ops:
+            self._assert_group_allowed(op)
         return ops
+
+    @staticmethod
+    def _assert_group_allowed(operator):
+        """Группа исключена из обработки (deny-list) → заявку подавать нельзя."""
+        from ..services.group_scope import is_operator_excluded
+        if is_operator_excluded(operator):
+            raise _ApplyError(
+                f"Группа оператора «{operator.full_name}» исключена из обработки "
+                "— подать заявку нельзя.",
+                code="group_excluded",
+                http_status=http_status.HTTP_409_CONFLICT)
 
     def _comp_result(self, comp, rtype, correlation_id):
         fields = []

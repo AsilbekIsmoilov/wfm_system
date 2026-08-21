@@ -61,6 +61,16 @@ class Group(models.Model):
         default=True,
         db_index=True,
     )
+    is_excluded = models.BooleanField(
+        verbose_name="Исключена из обработки",
+        default=False,
+        db_index=True,
+        help_text=(
+            "True — операторы этой группы полностью пропускаются: не считается "
+            "долг, не грузятся логи, нет посещаемости, нельзя подать заявку. "
+            "Единый переключатель для всех подсистем (deny-list)."
+        ),
+    )
     created_at = models.DateTimeField(
         verbose_name="Создана",
         auto_now_add=True,

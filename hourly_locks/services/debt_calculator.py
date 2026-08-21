@@ -264,9 +264,14 @@ def _calculate_work_debts_inner(for_date: date) -> dict:
         ).values_list("transfer__operator_id", flat=True)
     )
 
-    # Основной цикл
-    logs = WorkLogDaily.objects.filter(day=for_date).select_related(
-        "operator", "shift",
+    # Основной цикл. Исключённые группы (deny-list) пропускаем — защита на
+    # случай, если лог всё же есть (обычно их отсеивает уже log_loader).
+    from .group_scope import exclude_operators
+    logs = exclude_operators(
+        WorkLogDaily.objects.filter(day=for_date).select_related(
+            "operator", "shift",
+        ),
+        path="operator",
     )
     stats = {"created": 0, "skipped": 0}
 

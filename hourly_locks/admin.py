@@ -69,8 +69,10 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(Group)
 class GroupAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "supervisor_display", "operators_count", "is_active")
-    list_filter = ("is_active",)
+    list_display = ("id", "name", "supervisor_display", "operators_count",
+                    "is_active", "is_excluded")
+    list_filter = ("is_active", "is_excluded")
+    list_editable = ("is_excluded",)
     search_fields = ("name", "supervisor__username")
     autocomplete_fields = ("supervisor",)
     readonly_fields = ("created_at", "updated_at")

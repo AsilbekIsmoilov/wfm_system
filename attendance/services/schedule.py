@@ -7,6 +7,7 @@ shift FK + is_day_off). Eski OperatorSchedule (days dict) endi yo'q.
 from datetime import date
 
 from hourly_locks.models import OperatorScheduleDay
+from hourly_locks.services.group_scope import exclude_operators
 
 
 def get_today_scheduled_operators():
@@ -28,6 +29,8 @@ def get_today_scheduled_operators():
         )
         .select_related("operator", "operator__group", "shift")
     )
+    # Исключённые группы (deny-list) полностью пропускаем.
+    qs = exclude_operators(qs, path="operator")
 
     result = []
     for sd in qs:
