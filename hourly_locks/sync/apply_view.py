@@ -389,9 +389,15 @@ class EditCompensationView(APIView):
         if "comment" in data:
             kwargs["comment"] = data["comment"]
 
+        author = _created_by(data.get("updated_by"))
         try:
             with transaction.atomic():
                 comp = edit_compensation(comp, **kwargs)
+                if author:
+                    comp.wfm_updated_by_id = author["id"]
+                    comp.wfm_updated_by_name = author["name"]
+                    comp.save(update_fields=[
+                        "wfm_updated_by_id", "wfm_updated_by_name", "updated_at"])
         except CompensationEditError as exc:
             return Response(
                 {"ok": False, "code": exc.code, "detail": exc.message, **exc.payload},
@@ -477,9 +483,15 @@ class EditTransferView(APIView):
         if "comment" in data:
             kwargs["comment"] = data["comment"]
 
+        author = _created_by(data.get("updated_by"))
         try:
             with transaction.atomic():
                 result = edit_transfer(tr, **kwargs)
+                if author:
+                    tr.wfm_updated_by_id = author["id"]
+                    tr.wfm_updated_by_name = author["name"]
+                    tr.save(update_fields=[
+                        "wfm_updated_by_id", "wfm_updated_by_name", "updated_at"])
         except TransferEditError as exc:
             return Response(
                 {"ok": False, "code": exc.code, "detail": exc.message, **exc.payload},

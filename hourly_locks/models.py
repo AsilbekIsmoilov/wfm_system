@@ -1078,6 +1078,20 @@ class BaseWorkRequest(models.Model):
         null=True,
         blank=True,
     )
+    # Снимок WFM-пользователя, последним отредактировавшего заявку (правка полей
+    # или файлов). Тоже не FK — только для отображения/аудита.
+    wfm_updated_by_id = models.CharField(
+        verbose_name="Кем изменена (WFM, id)",
+        max_length=64,
+        null=True,
+        blank=True,
+    )
+    wfm_updated_by_name = models.CharField(
+        verbose_name="Кем изменена (WFM, ФИО)",
+        max_length=255,
+        null=True,
+        blank=True,
+    )
 
     created_at = models.DateTimeField(
         verbose_name="Создана",
