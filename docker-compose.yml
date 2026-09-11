@@ -14,6 +14,10 @@ x-app-env: &app-env
   WFM_BASE_URL: ${WFM_BASE_URL}
   SYNC_SERVICE_TOKEN: ${SYNC_SERVICE_TOKEN}
   WFM_HTTP_TIMEOUT: ${WFM_HTTP_TIMEOUT:-30}
+  # Начальный суперпользователь (создаётся entrypoint при чистой БД). Пароль
+  # НЕ хранится в репозитории — задаётся в prod .env. Dev по умолчанию admin/123.
+  DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
+  DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-123}
 
 services:
   db:
