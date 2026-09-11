@@ -14,7 +14,9 @@ if [ "$RUN_MIGRATIONS" = "1" ]; then
   python manage.py collectstatic --noinput
 
   echo "[entrypoint] Ensuring admin superuser..."
-  python manage.py shell -c "from django.contrib.auth import get_user_model; U = get_user_model(); u, created = U.objects.get_or_create(username='admin', defaults={'is_staff': True, 'is_superuser': True, 'role': 'admin'}); (u.set_password('123'), u.save(), print('[entrypoint] superuser admin created')) if created else print('[entrypoint] superuser admin already exists')"
+  DJANGO_SUPERUSER_USERNAME="${DJANGO_SUPERUSER_USERNAME:-admin}" \
+  DJANGO_SUPERUSER_PASSWORD="${DJANGO_SUPERUSER_PASSWORD:-123}" \
+  python manage.py shell -c "import os; from django.contrib.auth import get_user_model; U = get_user_model(); un = os.environ.get('DJANGO_SUPERUSER_USERNAME', 'admin'); pw = os.environ.get('DJANGO_SUPERUSER_PASSWORD', '123'); u, created = U.objects.get_or_create(username=un, defaults={'is_staff': True, 'is_superuser': True, 'role': 'admin'}); (u.set_password(pw), u.save(), print(f'[entrypoint] superuser {un} created')) if created else print(f'[entrypoint] superuser {un} already exists')"
 fi
 
 exec "$@"
