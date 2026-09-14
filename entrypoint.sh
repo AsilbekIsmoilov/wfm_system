@@ -2,6 +2,30 @@
 set -e
 
 if [ "$RUN_MIGRATIONS" = "1" ]; then
+  # БД создаём здесь (у web есть доступ к MySQL). НЕ полагаемся на
+  # init-databases.sql: bind-mount ненадёжен на CI-раннере (docker-демон хоста
+  # не видит файл по пути checkout'а), поэтому default+archive БД могли не
+  # создаться. Идемпотентно (CREATE DATABASE IF NOT EXISTS).
+  echo "[entrypoint] Ensuring databases exist..."
+  python - <<'PYEOF'
+import os, MySQLdb
+conn = MySQLdb.connect(
+    host=os.environ.get("DB_HOST", "db"),
+    user=os.environ.get("DB_USER", "root"),
+    passwd=os.environ.get("DB_PASSWORD", ""),
+    port=int(os.environ.get("DB_PORT", "3306")),
+)
+cur = conn.cursor()
+for db in (os.environ.get("DB_NAME", "wc_system_default"),
+           os.environ.get("DB_NAME_ARCHIVE", "wc_system_archive")):
+    cur.execute(
+        "CREATE DATABASE IF NOT EXISTS `%s` "
+        "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" % db
+    )
+    print("[entrypoint] DB ensured:", db)
+conn.commit()
+PYEOF
+
   echo "[entrypoint] Applying migrations (default)..."
   python manage.py migrate --noinput
   echo "[entrypoint] Applying migrations (archive)..."
