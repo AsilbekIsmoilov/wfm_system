@@ -27,72 +27,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOLERANCE = timedelta(minutes=5)
 
 
-def link_selected_debts(compensation, debt_ids, cycle=None):
-    """Ручная привязка выбранных долгов к компенсации.
-
-    Создаёт CompensationDebtLink для указанных WorkDebtDetail — но ТОЛЬКО тех,
-    что принадлежат этому оператору и циклу (защита от чужих id) и ещё открыты
-    (locked_for_compensation=False, чтобы не привязать один долг дважды).
-    Заполняет compensation.debts_snapshot. Возвращает суммарную длительность
-    привязанных долгов (timedelta) — для авто-расчёта requested_duration.
-
-    Наличие ссылок ПЕРЕД верификацией отключает авто-FIFO
-    (см. _ensure_debt_links_or_auto_attach): будут учтены именно эти долги.
-    """
-    if not debt_ids:
-        return timedelta(0)
-    cycle = cycle or compensation.cycle
-    debts = WorkDebtDetail.objects.filter(
-        id__in=debt_ids,
-        operator=compensation.operator,
-        cycle=cycle,
-        locked_for_compensation=False,
-    ).order_by("day", "id")
-
-    snapshot = []
-    total = timedelta(0)
-    for d in debts:
-        snap = {
-            "id": d.id,
-            "day": str(d.day),
-            "source": d.source,
-            "shift_code": d.shift_code_snapshot,
-            "norm_full": str(d.norm_full),
-            "fact_full": str(d.fact_full),
-            "debt_full": str(d.debt_full),
-            "norm_lock": str(d.norm_lock),
-            "fact_lock": str(d.fact_lock),
-            "debt_lock": str(d.debt_lock),
-            "note": d.note or "",
-            "manual_attached": True,
-        }
-        CompensationDebtLink.objects.get_or_create(
-            compensation=compensation,
-            debt_detail=d,
-            defaults={"snapshot": snap, "applied": False},
-        )
-        snapshot.append(snap)
-        total += (d.debt_full or timedelta(0)) + (d.debt_lock or timedelta(0))
-
-    if snapshot:
-        compensation.debts_snapshot = snapshot
-        compensation.save(update_fields=["debts_snapshot", "updated_at"])
-        logger.info(
-            "[manual_attach] Comp #%d ga %d ta qarz qo'lda biriktirildi (total=%s)",
-            compensation.id, len(snapshot), total,
-        )
-    return total
-
-
 def verify_compensations(for_date):
     cycle = get_or_create_active_cycle()
     rolled_back = rollback_compensations_for_date(for_date)
     if rolled_back:
-        logger.info("[verify_compensations] Otkacheno %d", rolled_back)
+        logger.info("[verify_compensations] Откачено %d", rolled_back)
 
+    # Otrabotka'ni ISTISNO qilamiz — u alohida `verify_due_otrabotka` (per-day,
+    # oxirgi kun o'tgach) bilan tekshiriladi. Aks holda bu eski, planned_date
+    # bo'yicha bitta kunlik tekshiruv ko'p-kunli otrabotka'ni erta va noto'g'ri
+    # rad qilib, CompensationDay'larni pending'da qoldiradi.
     plans = Compensation.objects.filter(
         planned_date=for_date, status="pending",
-    ).select_related("operator", "type_rule")
+    ).exclude(type_rule__code="otrabotka").select_related("operator", "type_rule")
 
     if not plans.exists():
         # Rollback bo'lgan bo'lsa ham — recompute zarur
@@ -261,7 +208,7 @@ def _verify_schedule_based(compensation, for_date, cycle, fact_full, fact_lock):
         operator=operator, day=for_date,
     ).select_related("shift").first()
     if not schedule or not schedule.shift:
-        return _mark_declined(compensation, "Net raspisaniya")
+        return _mark_declined(compensation, "Нет расписания")
 
     shift = schedule.shift
 
@@ -305,8 +252,8 @@ def _verify_net_based(compensation, for_date, cycle, fact_full, fact_lock):
     if not is_day_off:
         return _mark_declined(
             compensation,
-            "NB-kompensatsiya faqat dam olish kunida bajariladi. "
-            "Bu kun ({}) uchun smena: {}.".format(
+            "NB-компенсация выполняется только в выходной день. "
+            "Смена в этот день ({}): {}.".format(
                 for_date, schedule.shift.code if schedule and schedule.shift else "?"
             ),
         )
@@ -480,7 +427,7 @@ def _apply_debt_links(compensation, credit, cycle):
             link.save(update_fields=["applied", "applied_amount", "updated_at"])
 
             wdd.locked_for_compensation = True
-            note_extra = "\nZakryto zayavkoy #{} ({}): {}".format(
+            note_extra = "\nЗакрыто заявкой #{} ({}): {}".format(
                 compensation.id, compensation.planned_date, applied,
             )
             wdd.note = (wdd.note or "") + note_extra
@@ -555,10 +502,16 @@ def _apply_to_archive(link, snapshot, operator, available_credit, compensation):
 
 
 def _mark_declined(compensation, reason):
+    # comment — FAQAT user qiymati; tizim unga yozmaydi. Rad sababini tizim
+    # maydoni auto_check_result'da saqlaymiz (comment/note emas).
     compensation.status = "declined"
-    compensation.comment = (compensation.comment or "") + "\nOtklonenо: " + reason
     compensation.verified_at = now()
-    compensation.save(update_fields=["status", "comment", "verified_at", "updated_at"])
+    meta = dict(compensation.auto_check_result or {})
+    meta["decline_reason"] = reason
+    compensation.auto_check_result = meta
+    compensation.save(update_fields=[
+        "status", "verified_at", "auto_check_result", "updated_at",
+    ])
     return "declined"
 
 

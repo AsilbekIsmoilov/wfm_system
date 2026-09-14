@@ -133,6 +133,32 @@ def get_cycle_for_date(target_date: date) -> Optional[Cycle]:
     ).first()
 
 
+def check_request_days(days, *, allow_past=False, cycle=None):
+    """ЕДИНАЯ проверка дат заявки для ВСЕХ типов (compensation/transfer).
+
+    Правило:
+      - каждая дата должна быть внутри активного цикла (cycle.contains);
+      - если allow_past=False — прошедшие даты запрещены (d < сегодня).
+      allow_past=True ставится ТОЛЬКО для ретроактивной отработки.
+
+    Возвращает список нарушений [{"day","code","cycle"?}]; пустой список = OK.
+    """
+    cycle = cycle or get_or_create_active_cycle()
+    today = date.today()
+    bad = []
+    for d in days:
+        if not d:
+            continue
+        if not cycle.contains(d):
+            bad.append({
+                "day": str(d), "code": "out_of_cycle",
+                "cycle": f"{cycle.start_date}–{cycle.end_date}",
+            })
+        elif not allow_past and d < today:
+            bad.append({"day": str(d), "code": "in_past"})
+    return bad
+
+
 # =============================================================================
 # Закрытие цикла
 # =============================================================================

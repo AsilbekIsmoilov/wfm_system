@@ -53,3 +53,21 @@ deploy-dev:
   tags: [wfm_dev]
   rules:
     - if: '$CI_COMMIT_BRANCH == "dev"'
+
+# ⚠️ ОПАСНО: полностью очищает PROD (тома + БД). Запускается ТОЛЬКО вручную
+# из GitLab UI на ветке main. Порядок для чистого релиза:
+#   1) задать CI/CD Variables (DB_NAME=wc_system_prod и т.д.)
+#   2) merge dev -> main (push) — прогонятся build/deploy
+#   3) вручную запустить clean-prod-db (down -v — том БД удаляется)
+#   4) вручную перезапустить (retry) deploy-prod — up создаст свежие БД
+#      (init-databases.sql -> wc_system_prod + wc_system_prod_archive) и мигрирует
+clean-prod-db:
+  stage: deploy
+  image: docker:25
+  tags: [wfm_prod]
+  when: manual
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - docker compose down -v

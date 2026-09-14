@@ -61,6 +61,16 @@ class Group(models.Model):
         default=True,
         db_index=True,
     )
+    is_excluded = models.BooleanField(
+        verbose_name="Исключена из обработки",
+        default=False,
+        db_index=True,
+        help_text=(
+            "True — операторы этой группы полностью пропускаются: не считается "
+            "долг, не грузятся логи, нет посещаемости, нельзя подать заявку. "
+            "Единый переключатель для всех подсистем (deny-list)."
+        ),
+    )
     created_at = models.DateTimeField(
         verbose_name="Создана",
         auto_now_add=True,
@@ -457,6 +467,74 @@ class RequestTypeRule(models.Model):
 
     def __str__(self):
         return f"{self.get_category_display()}: {self.display_name}"
+
+
+class RequestSubtypeRule(models.Model):
+    """Подтип заявки, привязанный к конкретному RequestTypeRule (напр. для
+    «Прочие льготы»: Отгул / Короткий день). Поведение — data-driven: full_day и
+    requires_hour_range управляют логикой приёма (полный день vs окно часов),
+    поэтому новый подтип добавляется через админку без правки кода."""
+
+    type_rule = models.ForeignKey(
+        RequestTypeRule,
+        verbose_name="Тип заявки",
+        on_delete=models.CASCADE,
+        related_name="subtypes",
+    )
+    code = models.CharField(
+        verbose_name="Код",
+        max_length=30,
+        db_index=True,
+    )
+    display_name = models.CharField(
+        verbose_name="Название",
+        max_length=100,
+    )
+    description = models.TextField(
+        verbose_name="Описание",
+        blank=True,
+    )
+
+    full_day = models.BooleanField(
+        verbose_name="Полный день",
+        default=False,
+        help_text="True — отменяется весь рабочий день, часы не нужны (напр. Отгул).",
+    )
+    requires_hour_range = models.BooleanField(
+        verbose_name="Требует диапазон часов",
+        default=False,
+        help_text="True — нужны hour_from/hour_to (напр. Короткий день).",
+    )
+
+    sort_order = models.PositiveSmallIntegerField(
+        verbose_name="Порядок сортировки",
+        default=100,
+    )
+    is_active = models.BooleanField(
+        verbose_name="Активно",
+        default=True,
+    )
+
+    created_at = models.DateTimeField(
+        verbose_name="Создано",
+        auto_now_add=True,
+    )
+    updated_at = models.DateTimeField(
+        verbose_name="Обновлено",
+        auto_now=True,
+    )
+
+    class Meta:
+        verbose_name = "Подтип заявки"
+        verbose_name_plural = "Подтипы заявок"
+        unique_together = ("type_rule", "code")
+        ordering = ["type_rule", "sort_order", "code"]
+        indexes = [
+            models.Index(fields=["type_rule", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.type_rule.display_name} → {self.display_name}"
 
 
 class SystemPolicy(models.Model):
@@ -985,6 +1063,36 @@ class BaseWorkRequest(models.Model):
         related_name="+",
     )
 
+    # Заявка, созданная через WFM: автор — пользователь WFM, а не Django-user,
+    # поэтому FK невозможен. Храним снимок (Mongo ObjectId + имя на момент
+    # создания) — только для отображения/аудита, бизнес-логика их не читает.
+    wfm_created_by_id = models.CharField(
+        verbose_name="Кем создана (WFM, id)",
+        max_length=64,
+        null=True,
+        blank=True,
+    )
+    wfm_created_by_name = models.CharField(
+        verbose_name="Кем создана (WFM, ФИО)",
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+    # Снимок WFM-пользователя, последним отредактировавшего заявку (правка полей
+    # или файлов). Тоже не FK — только для отображения/аудита.
+    wfm_updated_by_id = models.CharField(
+        verbose_name="Кем изменена (WFM, id)",
+        max_length=64,
+        null=True,
+        blank=True,
+    )
+    wfm_updated_by_name = models.CharField(
+        verbose_name="Кем изменена (WFM, ФИО)",
+        max_length=255,
+        null=True,
+        blank=True,
+    )
+
     created_at = models.DateTimeField(
         verbose_name="Создана",
         auto_now_add=True,
@@ -999,7 +1107,7 @@ class BaseWorkRequest(models.Model):
         max_length=64,
         null=True,
         blank=True,
-        unique=True,
+        db_index=True,
     )
 
     class Meta:
@@ -1112,6 +1220,16 @@ class Compensation(BaseWorkRequest):
             models.Index(fields=["source"]),
             models.Index(fields=["source", "status"]),
         ]
+        constraints = [
+            # WFM apply-request bitta correlation_id ni bir arizadagi HAR operatorga
+            # yozadi. Yakka unique to'qnashardi; (correlation_id, operator) juftligi
+            # bir operatorga bir correlation_id ni bir marta kafolatlaydi.
+            # MySQL bir nechta NULL correlation_id ga ruxsat beradi (qo'lda yaratilgan).
+            models.UniqueConstraint(
+                fields=["correlation_id", "operator"],
+                name="uq_compensation_corr_operator",
+            ),
+        ]
         ordering = ["-planned_date", "-created_at"]
 
     def clean(self):
@@ -1129,6 +1247,16 @@ class Compensation(BaseWorkRequest):
                         f"Для типа «{rule.display_name}» подача заявок "
                         "на прошедшую дату запрещена. "
                         "Используйте ретроактивную проверку."
+                    ),
+                })
+
+        # ЕДИНАЯ: любая заявка — только в пределах активного цикла.
+        if self.planned_date and self._state.adding:
+            cyc = Cycle.get_active()
+            if cyc and not cyc.contains(self.planned_date):
+                raise ValidationError({
+                    "planned_date": (
+                        f"Дата вне активного цикла ({cyc.start_date}–{cyc.end_date})."
                     ),
                 })
 
@@ -1449,13 +1577,15 @@ class Transfer(BaseWorkRequest):
         help_text="isklyuchenie/obuchenie: сколько добавляется к допустимому перерыву",
     )
 
-    # Подтип заявки (напр. для «Прочие льготы»: otgul / korotkiy_den).
-    subtype = models.CharField(
+    # Подтип заявки — ссылка на каталог RequestSubtypeRule (напр. для
+    # «Прочие льготы»: Отгул / Короткий день). Параллельно type_rule.
+    subtype_rule = models.ForeignKey(
+        "RequestSubtypeRule",
         verbose_name="Подтип",
-        max_length=30,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        help_text="Напр. для «Прочие льготы»: otgul (отгул) / korotkiy_den (короткий день)",
+        related_name="transfers",
     )
 
     # Только для otprashivanie: связанный план отработки (Compensation типа
@@ -1480,6 +1610,16 @@ class Transfer(BaseWorkRequest):
             models.Index(fields=["status"]),
             models.Index(fields=["cycle", "status"]),
             models.Index(fields=["type_rule", "status"]),
+        ]
+        constraints = [
+            # WFM apply-request bitta correlation_id ni bir arizadagi HAR operatorga
+            # yozadi. Yakka unique to'qnashardi; (correlation_id, operator) juftligi
+            # bir operatorga bir correlation_id ni bir marta kafolatlaydi.
+            # MySQL bir nechta NULL correlation_id ga ruxsat beradi (qo'lda yaratilgan).
+            models.UniqueConstraint(
+                fields=["correlation_id", "operator"],
+                name="uq_transfer_corr_operator",
+            ),
         ]
         ordering = ["-date_from", "-created_at"]
 
@@ -1510,6 +1650,23 @@ class Transfer(BaseWorkRequest):
             raise ValidationError(
                 "Дата начала не может быть позже даты окончания"
             )
+
+        # ЕДИНАЯ: transfer sanalari — aktiv sikl ichida + past emas (transferda retro yo'q).
+        if self.date_from and self._state.adding:
+            from .services.cycle import check_request_days
+            span, d = [], self.date_from
+            end = self.date_to or self.date_from
+            while d <= end:
+                span.append(d)
+                d += timedelta(days=1)
+            bad = check_request_days(span, allow_past=False)
+            if bad:
+                b = bad[0]
+                if b["code"] == "out_of_cycle":
+                    raise ValidationError({"date_from": (
+                        f"Дата {b['day']} вне активного цикла ({b['cycle']}).")})
+                raise ValidationError({"date_from": (
+                    f"Заявку на прошедшую дату ({b['day']}) подать нельзя.")})
 
         if rule.min_duration and self.requested_duration and self.requested_duration < rule.min_duration:
             raise ValidationError({
@@ -2075,3 +2232,65 @@ class EventLog(models.Model):
 
     def __str__(self):
         return f"[{self.level}] {self.event_type} @ {self.timestamp:%Y-%m-%d %H:%M}"
+
+
+class RequestActionLog(models.Model):
+    """
+    Аудит-лог действий над заявками (compensation/transfer) через WFM API.
+
+    Создаётся и хранится в WFM (при каждом POST/PATCH/GET/DELETE), затем
+    push'ится в Django. Идемпотентность — по wfm_id (Mongo _id лога).
+
+    payload зависит от метода:
+      POST   — тело создания (что создано)
+      PATCH  — изменённые поля {before, after}
+      GET(list)   — query/фильтры
+      GET(detail) — {id}
+      DELETE — полный снимок удалённой заявки (данные не теряются)
+    """
+    METHOD_CHOICES = [
+        ("POST", "POST"), ("PATCH", "PATCH"), ("GET", "GET"), ("DELETE", "DELETE"),
+    ]
+    ENTITY_CHOICES = [("compensation", "compensation"), ("transfer", "transfer")]
+
+    wfm_id = models.CharField(
+        verbose_name="WFM лог _id", max_length=64, unique=True,
+        help_text="Mongo _id лога в WFM — ключ идемпотентности при push.",
+    )
+    user_id = models.CharField(verbose_name="WFM user _id", max_length=64, blank=True, default="")
+    user_name = models.CharField(verbose_name="Пользователь", max_length=255, blank=True, default="")
+    method = models.CharField(verbose_name="Метод", max_length=10, choices=METHOD_CHOICES)
+    entity_type = models.CharField(
+        verbose_name="Тип заявки", max_length=20, choices=ENTITY_CHOICES,
+    )
+    entity_external_id = models.BigIntegerField(
+        verbose_name="external_id заявки", null=True, blank=True,
+        help_text="external_id заявки; null для GET-списка.",
+    )
+    entity_wfm_id = models.CharField(
+        verbose_name="ID заявки (WFM)", max_length=64, blank=True, default="",
+        help_text="Mongo _id самой заявки в WFM (POST — из ответа, иначе — из пути).",
+    )
+    endpoint = models.CharField(verbose_name="Endpoint", max_length=500)
+    payload = models.JSONField(verbose_name="Данные", default=dict, blank=True)
+    status_code = models.PositiveSmallIntegerField(
+        verbose_name="HTTP статус", null=True, blank=True,
+    )
+    success = models.BooleanField(verbose_name="Успех", default=True)
+    created_at = models.DateTimeField(verbose_name="Дата/время")
+
+    class Meta:
+        verbose_name = "Лог действия над заявкой"
+        verbose_name_plural = "Логи действий над заявками"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user_id"]),
+            models.Index(fields=["entity_type", "entity_external_id"]),
+            models.Index(fields=["created_at"]),
+            models.Index(fields=["method"]),
+        ]
+
+    def __str__(self):
+        who = self.user_name or self.user_id or "?"
+        tgt = f"{self.entity_type} #{self.entity_external_id}" if self.entity_external_id else self.entity_type
+        return f"{who} — {self.method} {tgt} [{self.status_code}]"

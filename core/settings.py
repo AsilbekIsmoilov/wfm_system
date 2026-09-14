@@ -285,3 +285,7 @@ SYNC_SERVICE_TOKEN = os.environ.get(
 )
 
 WFM_HTTP_TIMEOUT = int(os.environ.get("WFM_HTTP_TIMEOUT", "30"))
+
+
+WFM_LOGIN = os.environ.get("WFM_LOGIN", "+998101234570")
+WFM_PASSWORD = os.environ.get("WFM_PASSWORD", "password123")

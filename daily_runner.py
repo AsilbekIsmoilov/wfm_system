@@ -91,8 +91,12 @@ def _in_grafik_window(day: date) -> bool:
     return GRAFIK_SYNC_START_DAY <= day.day <= GRAFIK_SYNC_END_DAY
 
 
-def run(target_date: date, skip_sheets: bool = False) -> dict:
-    """ЕДИНЫЙ ежедневный прогон за target_date. Вызывается и beat'ом, и вручную."""
+def run(target_date: date, skip_sheets: bool = False, full: bool = False) -> dict:
+    """ЕДИНЫЙ ежедневный прогон за target_date. Вызывается и beat'ом, и вручную.
+
+    full=True => WFM push игнорирует watermark и отправляет ВСЁ (operators, groups,
+    type-rules, shifts + cycle data). Нужно один раз после сброса/рассинхрона PK.
+    """
     result = {"target_date": str(target_date)}
     section(f"DAILY RUNNER za {target_date}")
 
@@ -183,11 +187,15 @@ def run(target_date: date, skip_sheets: bool = False) -> dict:
     _step(result, "time_offs", f"9. Time-off za {target_date}",
           lambda: transfer_verifier.apply_time_off_extended_window(target_date))
 
-    # 10. Финальный пересчёт долгов (safety net)
+    # 10. Финальный пересчёт долгов (safety net) — TO'LIQ: siklda WorkDebt yoki
+    #     WorkDebtDetail'i bor BARCHA operatorlar. Shunda WDD o'chirilib qolgan
+    #     (stale) WorkDebt ham 0 ga tushadi — WDD yo'q → WorkDebt = 0 kafolati.
     def _recompute():
-        from hourly_locks.services.work_debt import recompute_for_date
-        return recompute_for_date(target_date)
-    _step(result, "work_debt_recompute", f"10. Yakuniy recompute za {target_date}", _recompute)
+        from hourly_locks.services.work_debt import recompute_for_cycle
+        from hourly_locks.services.cycle import get_cycle_for_date, get_or_create_active_cycle
+        cycle = get_cycle_for_date(target_date) or get_or_create_active_cycle()
+        return recompute_for_cycle(cycle)
+    _step(result, "work_debt_recompute", f"10. Yakuniy TO'LIQ recompute za {target_date}", _recompute)
 
     result["status"] = "completed"
 
@@ -201,7 +209,7 @@ def run(target_date: date, skip_sheets: bool = False) -> dict:
 
     # 11. WFM ga natijani yuborish (Oqim C, инкрементально) — ПЕРЕД ролловером,
     #     чтобы данные последнего дня цикла ушли в WFM до архивации.
-    _step(result, "wfm_push", "11. WFM push (Oqim C)", push_cycle_to_wfm)
+    _step(result, "wfm_push", "11. WFM push (Oqim C)", lambda: push_cycle_to_wfm(full=full))
 
     # 12. Ролловер цикла: закрыть истёкший (end_date < сегодня) и открыть новый
     #     активный. Только для ШТАТНОГО прогона (target = вчера) — для ручного

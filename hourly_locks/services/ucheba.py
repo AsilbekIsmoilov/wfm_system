@@ -139,9 +139,17 @@ def _validate_common(days, hour_from, hour_to):
     days = _normalize_days(days)
     if not days:
         raise UchebaError("Не выбран ни один день.", code="no_days")
-    for d in days:
-        if not cycle.contains(d):
-            raise UchebaError(f"День {d} вне активного цикла.", code="day_out_of_cycle")
+    # ЕДИНАЯ проверка дат: в цикле + не в прошлом (ретро для учёбы нет).
+    from .cycle import check_request_days
+    bad = check_request_days(days, allow_past=False, cycle=cycle)
+    if bad:
+        b = bad[0]
+        if b["code"] == "out_of_cycle":
+            raise UchebaError(f"День {b['day']} вне активного цикла ({b['cycle']}).",
+                              code="day_out_of_cycle", payload={"violations": bad})
+        raise UchebaError(
+            f"Заявку на прошедший день ({b['day']}) подать нельзя.",
+            code="day_in_past", payload={"violations": bad})
     return {"cycle": cycle, "rule": rule, "days": days,
             "hour_from": hour_from, "hour_to": hour_to, "window": window}
 
@@ -173,21 +181,39 @@ def preview_ucheba(*, operators, days, hour_from, hour_to) -> dict:
             "operators": per_op, "ok": bool(per_op) and all(o["ok"] for o in per_op)}
 
 
-@transaction.atomic
-def _accept_one(operator, valid_days, ctx, comment, user, pdf_file, screens):
+def apply_ucheba_effects(tr, valid_days, ctx):
+    """Установить поля учёбы на tr (status=pending/даты/часы/длительность) и
+    пересоздать UchebaDay. Единый источник эффектов учёбы — приём (_accept_one)
+    и редактирование (transfer_edit). Редактирование сбрасывает статус в pending
+    → повторная верификация в пайплайне. `tr` содержит operator/cycle/type_rule."""
     total = ctx["window"] * len(valid_days)
-    tr = Transfer.objects.create(
-        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
-        status="pending",
-        date_from=min(valid_days), date_to=max(valid_days),
-        hour_from=ctx["hour_from"], hour_to=ctx["hour_to"],
-        requested_duration=total,
-        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
-    )
+    tr.status = "pending"
+    tr.date_from = min(valid_days)
+    tr.date_to = max(valid_days)
+    tr.hour_from = ctx["hour_from"]
+    tr.hour_to = ctx["hour_to"]
+    tr.requested_duration = total
+    tr.save()
+    tr.ucheba_days.all().delete()
     for d in valid_days:
         UchebaDay.objects.create(
             transfer=tr, day=d, hour_from=ctx["hour_from"], hour_to=ctx["hour_to"],
             duration=ctx["window"], status="pending")
+    return tr
+
+
+def revert_ucheba_effects(tr):
+    """Удалить UchebaDay заявки (поля tr перезапишет apply). Идемпотентно."""
+    tr.ucheba_days.all().delete()
+
+
+@transaction.atomic
+def _accept_one(operator, valid_days, ctx, comment, user, pdf_file, screens):
+    tr = Transfer(
+        operator=operator, cycle=ctx["cycle"], type_rule=ctx["rule"],
+        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
+    )
+    apply_ucheba_effects(tr, valid_days, ctx)
     notify.notify_operator(operator, "ucheba_created", {
         "transfer_id": tr.id, "days": [str(d) for d in valid_days],
         "window": str(ctx["window"])})
@@ -283,22 +309,25 @@ def verify_ucheba_day(uday) -> dict:
     debt = debt_full + debt_lock
     work_hours = max(full - lock, Z)
 
-    # откат прошлого долга этого дня учёбы (идемпотентность)
-    WorkDebtDetail.objects.filter(
-        source="ucheba", source_object_id=tr.id, day=day).delete()
-
+    # Идемпотентность БЕЗ churn: update_or_create — external_id (identity) barqaror
+    # qoladi (delete+create har run yangi PK yasar edi → WFM'da dublikat).
     if debt > Z:
-        WorkDebtDetail.objects.create(
-            operator=op, day=day, cycle=cycle, source="ucheba",
-            source_object_id=tr.id, violation_type=vtype,
-            shift=shift, shift_code_snapshot=(shift.code if shift else None),
-            norm_full=norm_full, fact_full=full,
-            debt_full=debt_full, norm_lock=norm_lock, fact_lock=lock,
-            debt_lock=debt_lock,
-            note=(f"Учёба #{tr.id} за {day} (расш. окно).\n{calc_note}"),
+        WorkDebtDetail.objects.update_or_create(
+            source="ucheba", source_object_id=tr.id, day=day,
+            defaults=dict(
+                operator=op, cycle=cycle, violation_type=vtype,
+                shift=shift, shift_code_snapshot=(shift.code if shift else None),
+                norm_full=norm_full, fact_full=full,
+                debt_full=debt_full, norm_lock=norm_lock, fact_lock=lock,
+                debt_lock=debt_lock,
+                note=(f"Учёба #{tr.id} за {day} (расш. окно).\n{calc_note}"),
+            ),
         )
         status = "partial" if work_hours > Z else "declined"
     else:
+        # долга нет → прежнюю запись удаляем (этот delete нужно синхронизировать в WFM).
+        WorkDebtDetail.objects.filter(
+            source="ucheba", source_object_id=tr.id, day=day).delete()
         status = "approved"
 
     uday.fact_full = full; uday.fact_lock = lock; uday.debt = debt

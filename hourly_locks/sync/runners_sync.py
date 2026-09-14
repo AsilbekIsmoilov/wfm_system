@@ -2,13 +2,15 @@
 Runner -> WFM push (Oqim C) for ALL operators-module models (two-way sync).
 Call push_cycle_to_wfm() at the END of each runner.
 
-Durations -> minutes; times -> 'HH:MM'; dates -> ISO. Upsert key on WFM side = external_id.
+Durations -> minutes, EXCEPT work_debt(current_debt/total_accumulated) and
+work_debt_detail(norm/fact/debt/make_up_wh) which go as 'HH:MM:SS' (WFM stores seconds).
+Times -> 'HH:MM'; dates -> ISO. Upsert key on WFM side = external_id.
 """
 import logging
 
 from django.utils import timezone
 from hourly_locks.models import (
-    Group, Shift, RequestTypeRule, Operator, Cycle,
+    Group, Shift, RequestTypeRule, RequestSubtypeRule, Operator, Cycle,
     WorkDebt, WorkDebtDetail, Compensation, Transfer, CompensationDebtLink,
 )
 
@@ -40,6 +42,7 @@ def _save_watermark(dt):
 def _since_filter(qs, since):
     return qs.filter(updated_at__gt=since) if since else qs
 from . import wfm_client
+from ..utils import format_duration
 
 logger = logging.getLogger("wfm_sync")
 CHUNK = 500
@@ -64,6 +67,50 @@ def _push(entity, items):
     for i in range(0, len(items), CHUNK):
         wfm_client.push(entity, items[i:i + CHUNK])
     return len(items)
+
+
+def _reconcile(entity, qs, cycle_id=None, compensation_ids=None, operator_ids=None,
+               all_scope=False):
+    """
+    Delete-sync: WFM'ga bu scope uchun Django'dagi JORIY external_id ro'yxatini
+    yuboradi; WFM ro'yxatda yo'q yozuvlarni prune qiladi (churn-orphan + haqiqiy
+    delete + arxiv). To'liq ro'yxat yuborilishi shart — shuning uchun watermark'ga
+    bog'liq emas. Xato bo'lsa pipeline'ni buzmaydi (log + davom).
+
+    all_scope=True — master (reference) entitylar uchun: sikl yo'q, shuning uchun
+    butun kolleksiya shu ro'yxatga qarshi tozalanadi. WFM buni faqat whitelist'dagi
+    master entitylar uchun va BO'SH BO'LMAGAN ro'yxatda qabul qiladi.
+    """
+    body = {"external_ids": list(qs.values_list("id", flat=True))}
+    if cycle_id is not None:
+        body["cycle_id"] = cycle_id
+    if compensation_ids is not None:
+        body["compensation_ids"] = list(compensation_ids)
+    if operator_ids is not None:
+        body["operator_ids"] = list(operator_ids)
+    if all_scope:
+        body["all"] = True
+    try:
+        return wfm_client.reconcile(entity, body)
+    except Exception as exc:  # WFM o'chgan bo'lsa ham runner davom etsin
+        logger.warning("WFM reconcile(%s) xato: %s", entity, exc)
+        return None
+
+
+def _reconcile_master() -> dict:
+    """
+    Master entitylar uchun delete-sync. push_master_data watermark bo'yicha FAQAT
+    o'zgarganlarni yuboradi, ya'ni Django'da O'CHIRILGAN operator/guruh/tur WFM'da
+    abadiy qolib ketardi. Bu yerda har run'da to'liq id ro'yxati yuboriladi va WFM
+    ortiqchasini o'chiradi. Ro'yxat bo'sh bo'lsa WFM rad etadi (himoya rail).
+    """
+    return {
+        "operator-groups": _reconcile("operator-groups", Group.objects.all(), all_scope=True),
+        "shifts": _reconcile("shifts", Shift.objects.all(), all_scope=True),
+        "type-rules": _reconcile("type-rules", RequestTypeRule.objects.all(), all_scope=True),
+        "request-subtypes": _reconcile("request-subtypes", RequestSubtypeRule.objects.all(), all_scope=True),
+        "operators": _reconcile("operators", Operator.objects.all(), all_scope=True),
+    }
 
 
 def _ser_group(g):
@@ -98,6 +145,15 @@ def _ser_type_rule(r):
     }
 
 
+def _ser_subtype_rule(s):
+    return {
+        "external_id": s.id, "type_rule_id": s.type_rule_id,
+        "code": s.code, "display_name": s.display_name, "description": s.description,
+        "full_day": s.full_day, "requires_hour_range": s.requires_hour_range,
+        "sort_order": s.sort_order, "is_active": s.is_active,
+    }
+
+
 def _ser_operator(o):
     return {
         "external_id": o.id, "login_id": o.login_id, "surname": o.surname, "name": o.name,
@@ -117,7 +173,9 @@ def _ser_cycle(c):
 def _ser_work_debt(w):
     return {
         "external_id": w.id, "operator_id": w.operator_id, "cycle_id": w.cycle_id,
-        "current_debt": _min(w.current_debt), "total_accumulated": _min(w.total_accumulated),
+        # HH:MM:SS (WFM parses to seconds); other duration fields stay minutes.
+        "current_debt": format_duration(w.current_debt),
+        "total_accumulated": format_duration(w.total_accumulated),
     }
 
 
@@ -126,13 +184,27 @@ def _ser_detail(d):
         "external_id": d.id, "operator_id": d.operator_id, "cycle_id": d.cycle_id,
         "day": _iso(d.day), "source": d.source, "source_object_id": d.source_object_id,
         "shift_id": d.shift_id, "shift_code_snapshot": d.shift_code_snapshot, "violation_type": d.violation_type,
-        "norm_full": _min(d.norm_full), "fact_full": _min(d.fact_full), "debt_full": _min(d.debt_full),
-        "norm_lock": _min(d.norm_lock), "fact_lock": _min(d.fact_lock), "debt_lock": _min(d.debt_lock),
-        "make_up_wh": _min(d.make_up_wh), "locked_for_compensation": d.locked_for_compensation, "note": d.note,
+        # HH:MM:SS (WFM parses to seconds); other duration fields stay minutes.
+        "norm_full": format_duration(d.norm_full), "fact_full": format_duration(d.fact_full),
+        "debt_full": format_duration(d.debt_full), "norm_lock": format_duration(d.norm_lock),
+        "fact_lock": format_duration(d.fact_lock), "debt_lock": format_duration(d.debt_lock),
+        "make_up_wh": format_duration(d.make_up_wh), "locked_for_compensation": d.locked_for_compensation,
+        "note": d.note,
     }
 
 
 def _ser_compensation(c):
+    # Frontend uchun BIR XIL days[]/durations[] tuzilishi (HH:MM:SS, bir tartibda):
+    #   - otrabotka        → CompensationDay (work-off kunlari va per-day davomiylik);
+    #   - auto-approve      → CompensationDay yo'q, shuning uchun days=[planned_date],
+    #     (debt-justification)  durations=[verified_duration] bilan to'ldiramiz.
+    comp_days = list(c.days.all().order_by("day"))
+    if comp_days:
+        days = [_iso(d.day) for d in comp_days]
+        durations = [format_duration(d.allocated_duration) for d in comp_days]
+    else:
+        days = [_iso(c.planned_date)] if c.planned_date else []
+        durations = [format_duration(c.verified_duration)] if c.verified_duration else []
     return {
         "external_id": c.id, "operator_id": c.operator_id, "cycle_id": c.cycle_id, "status": c.status,
         "comment": c.comment, "verified_at": c.verified_at.isoformat() if c.verified_at else None,
@@ -142,6 +214,9 @@ def _ser_compensation(c):
         "verified_duration": _min(c.verified_duration) if c.verified_duration else None,
         "remaining_debt": _min(c.remaining_debt) if c.remaining_debt else None,
         "deducted": c.deducted, "correlation_id": getattr(c, "correlation_id", None),
+        # WFM shu maydonlarni ko'rsatadi — days va durations (HH:MM:SS) bir xil tartibda.
+        "days": days,
+        "durations": durations,
     }
 
 
@@ -149,6 +224,7 @@ def _ser_transfer(t):
     return {
         "external_id": t.id, "operator_id": t.operator_id, "cycle_id": t.cycle_id, "status": t.status,
         "comment": t.comment, "type_rule_id": t.type_rule_id,
+        "subtype_rule_id": t.subtype_rule_id,  # RequestSubtypeRule PK (напр. Короткий день)
         "date_from": _iso(t.date_from), "date_to": _iso(t.date_to),
         "hour_from": _hhmm(t.hour_from), "hour_to": _hhmm(t.hour_to),
         "requested_duration": _min(t.requested_duration) if t.requested_duration else None,
@@ -172,8 +248,12 @@ def push_master_data(since=None) -> dict:
         "operator-groups": _push("operator-groups", [_ser_group(x) for x in _since_filter(Group.objects.all(), since)]),
         "shifts": _push("shifts", [_ser_shift(x) for x in _since_filter(Shift.objects.all(), since)]),
         "type-rules": _push("type-rules", [_ser_type_rule(x) for x in _since_filter(RequestTypeRule.objects.all(), since)]),
+        "request-subtypes": _push("request-subtypes", [_ser_subtype_rule(x) for x in _since_filter(RequestSubtypeRule.objects.all(), since)]),
         "operators": _push("operators", [_ser_operator(x) for x in _since_filter(Operator.objects.all(), since)]),
     }
+    # Push faqat MAVJUD yozuvlarni yuboradi — o'chirilganini WFM bilmaydi.
+    # Shuning uchun push'dan keyin darhol delete-sync qilamiz.
+    out["reconcile"] = _reconcile_master()
     logger.info("WFM master push (since=%s): %s", since, out)
     return out
 
@@ -196,17 +276,72 @@ def push_cycle_to_wfm(cycle=None, include_master=True, full=False) -> dict:
         return out
 
     wfm_client.push("cycles", [_ser_cycle(cycle)])  # cycle: bir nechta qator, doim
-    out["work-debts"] = _push("work-debts", [_ser_work_debt(x) for x in _since_filter(WorkDebt.objects.filter(cycle=cycle), since)])
-    out["work-debt-details"] = _push("work-debt-details", [_ser_detail(x) for x in _since_filter(WorkDebtDetail.objects.filter(cycle=cycle), since)])
-    out["compensations"] = _push("compensations", [_ser_compensation(x) for x in _since_filter(Compensation.objects.filter(cycle=cycle), since)])
-    out["transfers"] = _push("transfers", [_ser_transfer(x) for x in _since_filter(Transfer.objects.filter(cycle=cycle), since)])
+    # Sikl-scoped yozuvlar (cheklangan — yuzlab) HAR run TO'LIQ yuboriladi
+    # (watermark'siz). Watermark faqat KATTA master data uchun. Sabab: agar push
+    # fail bo'lsa yoki WFM reset bo'lsa, watermark oldinga surilib, o'zgarmagan
+    # yozuvlar hech qachon qayta yuborilmay drift qoladi (reconcile faqat o'chiradi,
+    # qo'shmaydi). To'liq upsert WFM'ni har run Django bilan tenglashtiradi.
+    out["work-debts"] = _push("work-debts", [_ser_work_debt(x) for x in WorkDebt.objects.filter(cycle=cycle)])
+    out["work-debt-details"] = _push("work-debt-details", [_ser_detail(x) for x in WorkDebtDetail.objects.filter(cycle=cycle)])
+    out["compensations"] = _push("compensations", [_ser_compensation(x) for x in Compensation.objects.filter(cycle=cycle)])
+    out["transfers"] = _push("transfers", [_ser_transfer(x) for x in Transfer.objects.filter(cycle=cycle)])
     out["compensation-debt-links"] = _push(
         "compensation-debt-links",
-        [_ser_debt_link(x) for x in _since_filter(CompensationDebtLink.objects.filter(compensation__cycle=cycle), since)],
+        [_ser_debt_link(x) for x in CompensationDebtLink.objects.filter(compensation__cycle=cycle)],
     )
+
+    # Delete-sync (reconcile): WFM'da bu sikl uchun Django'da endi mavjud bo'lmagan
+    # yozuvlarni prune qilamiz. Bu upsert-only push qoldirgan orphanlarni (delete+
+    # create churn'idan qolgan eski PK'lar + haqiqiy o'chirilganlar) tozalaydi.
+    comp_ids = list(Compensation.objects.filter(cycle=cycle).values_list("id", flat=True))
+    out["reconcile"] = {
+        "work-debts": _reconcile("work-debts", WorkDebt.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "work-debt-details": _reconcile("work-debt-details", WorkDebtDetail.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "compensations": _reconcile("compensations", Compensation.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "transfers": _reconcile("transfers", Transfer.objects.filter(cycle=cycle), cycle_id=cycle.id),
+        "compensation-debt-links": _reconcile(
+            "compensation-debt-links",
+            CompensationDebtLink.objects.filter(compensation__cycle=cycle),
+            compensation_ids=comp_ids),
+    }
+
+    # full=True — «режим починки»: реконсайлим и ЗАКРЫТЫЕ циклы. Обычный прогон
+    # скоупится только на активный цикл, поэтому заархивированный цикл иначе
+    # остаётся в WFM навсегда (архивация чистит только default DB Django).
+    if full:
+        out["reconcile_closed"] = _reconcile_closed_cycles(cycle.id)
 
     _save_watermark(started_at)  # keyingi push shu vaqtdan boshlaydi
     logger.info("WFM push (cycle %s, since=%s): %s", cycle.id, since, out)
+    return out
+
+
+def _reconcile_closed_cycles(active_cycle_id) -> dict:
+    """
+    Для каждого НЕ активного цикла отправляем в WFM список того, что реально
+    осталось в Django (обычно пусто) — WFM удаляет всё остальное по этому циклу.
+    Переносимые transfer'ы (pending/in_progress) не пострадают: они попадают в
+    список «осталось».
+    """
+    out = {}
+    closed_ids = list(
+        Cycle.objects.exclude(id=active_cycle_id).values_list("id", flat=True)
+    )
+    for cid in closed_ids:
+        comp_ids = list(Compensation.objects.filter(cycle_id=cid).values_list("id", flat=True))
+        out[cid] = {
+            "work-debts": _reconcile("work-debts", WorkDebt.objects.filter(cycle_id=cid), cycle_id=cid),
+            "work-debt-details": _reconcile("work-debt-details", WorkDebtDetail.objects.filter(cycle_id=cid), cycle_id=cid),
+            "compensations": _reconcile("compensations", Compensation.objects.filter(cycle_id=cid), cycle_id=cid),
+            "transfers": _reconcile("transfers", Transfer.objects.filter(cycle_id=cid), cycle_id=cid),
+        }
+        if comp_ids:
+            out[cid]["compensation-debt-links"] = _reconcile(
+                "compensation-debt-links",
+                CompensationDebtLink.objects.filter(compensation__cycle_id=cid),
+                compensation_ids=comp_ids,
+            )
+    logger.info("WFM reconcile closed cycles: %s", list(out.keys()))
     return out
 
 
@@ -216,3 +351,71 @@ def push_cycle_status(cycle) -> dict:
         return {"pushed": 0}
     wfm_client.push("cycles", [_ser_cycle(cycle)])
     return {"cycle_id": cycle.id, "status": cycle.status}
+
+
+def push_after_apply(operator_ids, cycle) -> dict:
+    """
+    Variant A1: ta'sirlangan operator(lar)ning JORIY to'liq holatini WFM'ga darhol
+    (sinxron) push qiladi — 5 ta model:
+        operator, work-debt (umumiy qarz), work-debt-detail (qarz detali),
+        compensation, transfer  (+ compensation-debt-link).
+    Shunda WFM Mongo darhol yangilanadi va GET'lar zudlik bilan ko'rsatadi.
+
+    CHAQIRILADI: apply-request (accept_*) dan keyin VA WFM->Django upsert/delete
+    (o'sha 5 entity'dan biri) dan keyin. Xato bo'lsa (WFM o'chgan) asosiy amalni
+    buzmaydi — yozuv Django'da bor, keyingi kunlik push baribir sinxronlaydi.
+    """
+    ops = list({int(o) for o in operator_ids})
+    if not ops:
+        return {"pushed": False}
+    # 1) Operator (sikldan mustaqil)
+    out = {
+        "operators": _push("operators", [
+            _ser_operator(x) for x in Operator.objects.filter(id__in=ops)]),
+    }
+    # 2) Sikl-scoped: umumiy qarz, qarz detallari, compensationlar, transferlar, linklar
+    if cycle is not None:
+        out["work-debts"] = _push("work-debts", [
+            _ser_work_debt(x) for x in WorkDebt.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["work-debt-details"] = _push("work-debt-details", [
+            _ser_detail(x) for x in WorkDebtDetail.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["compensations"] = _push("compensations", [
+            _ser_compensation(x) for x in Compensation.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["transfers"] = _push("transfers", [
+            _ser_transfer(x) for x in Transfer.objects.filter(operator_id__in=ops, cycle=cycle)])
+        out["compensation-debt-links"] = _push("compensation-debt-links", [
+            _ser_debt_link(x) for x in CompensationDebtLink.objects.filter(
+                compensation__operator_id__in=ops, compensation__cycle=cycle)])
+        # Delete-sync (reconcile): tahrirlash link'larni churn qiladi (revert
+        # delete + reapply create → yangi PK). Upsert-only push eski PK'larni
+        # WFM'da qoldiradi → debt_detail_ids dublikat bo'lib o'sadi. Shu operator(lar)
+        # compensationlari bo'yicha WFM'dagi ortiqcha link'larni prune qilamiz.
+        comp_ids = list(Compensation.objects.filter(
+            operator_id__in=ops, cycle=cycle).values_list("id", flat=True))
+        out["reconcile"] = {
+            "compensation-debt-links": _reconcile(
+                "compensation-debt-links",
+                CompensationDebtLink.objects.filter(
+                    compensation__operator_id__in=ops, compensation__cycle=cycle),
+                compensation_ids=comp_ids),
+            # WDD'lar ham churn qiladi: qisman oправдание «qoldiq» yozuvi yaratadi
+            # (source=compensation_remainder), ariza o'chirilganda/tahrirlanganda esa
+            # u Django'da o'chadi. Upsert-only push uni WFM'da qoldirar edi —
+            # natijada qarz oshib ketardi (2s → o'chirgandan keyin 3s).
+            #
+            # Scope ATAYIN faqat operator_ids — cycle_id QO'SHILMAYDI. Sababi deploy
+            # tartibi: operator_ids'ni bilmaydigan ESKI WFM uni jimgina tashlab
+            # yuboradi, va agar cycle_id bo'lsa scope «butun sikl» bo'lib qolardi —
+            # ro'yxatda esa faqat bitta operatorning yozuvlari → QOLGAN HAMMA
+            # operatorning WDD'lari WFM'dan o'chib ketardi. cycle_id'siz esa eski
+            # WFM scope'ni bo'sh deb topib «scope required» xatosi bilan HECH NARSA
+            # o'chirmaydi (xavfsiz no-op), yangi WFM esa to'g'ri ishlaydi.
+            # Shu sababli ro'yxat ham operatorning BARCHA sikllaridagi WDD'lari —
+            # scope sikl bilan chegaralanmagani uchun ro'yxat ham to'liq bo'lishi shart.
+            "work-debt-details": _reconcile(
+                "work-debt-details",
+                WorkDebtDetail.objects.filter(operator_id__in=ops),
+                operator_ids=ops),
+        }
+    logger.info("push_after_apply (operators=%s): %s", ops, out)
+    return out

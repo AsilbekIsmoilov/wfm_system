@@ -484,8 +484,13 @@ class OtrabotkaAcceptSerializer(serializers.Serializer):
     """
     Вход для preview/accept заявки отработки.
 
-    requested_duration НЕ принимается с фронта — считается как сумма
-    выбранных записей долга. Дни — в пределах активного цикла.
+    Сумма выбранных долгов считается автоматически. durations — необязательный
+    список длительностей ПО ДНЯМ (выровнен с days, каждый день редактируется на
+    фронте): каждый CompensationDay получает свою длительность, requested_duration
+    = их сумма. Сумма может быть МЕНЬШЕ суммы долгов (частичная отработка) —
+    непокрытый остаток при верификации возвращается в открытый долг; оригинальная
+    сумма долгов доступна в claim_metadata.debt_total. Если durations не задан —
+    сумма долгов делится поровну. Дни — в пределах активного цикла.
     """
     operator_id = serializers.IntegerField()
     debt_detail_ids = serializers.ListField(
@@ -493,6 +498,10 @@ class OtrabotkaAcceptSerializer(serializers.Serializer):
     )
     days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
+    )
+    durations = serializers.ListField(
+        child=serializers.DurationField(), required=False, allow_null=True,
+        allow_empty=True,
     )
     comment = serializers.CharField(
         required=False, allow_blank=True, default="",
@@ -550,7 +559,7 @@ class OtprashivanieAcceptSerializer(serializers.Serializer):
     operator_ids = serializers.ListField(
         child=serializers.IntegerField(), allow_empty=False,
     )
-    leave_days = serializers.ListField(
+    days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
     )
     hour_from = serializers.TimeField()
@@ -592,18 +601,21 @@ class BenefitAcceptSerializer(serializers.Serializer):
     operator_ids = serializers.ListField(
         child=serializers.IntegerField(), required=False, allow_empty=True, default=list,
     )
-    select_all_shift = serializers.ChoiceField(
-        choices=["9h"], required=False, allow_null=True,
+    # True = вся смена (кроме 12ч), False/null = по operator_ids.
+    select_all_shift = serializers.BooleanField(
+        required=False, allow_null=True, default=False,
     )
     code = serializers.CharField()
-    subtype = serializers.ChoiceField(
-        choices=["otgul", "korotkiy_den"], required=False, allow_null=True,
-    )
+    # Код подтипа (напр. otgul / korotkiy_den). Допустимость проверяется в
+    # сервисе по каталогу RequestSubtypeRule, привязанному к типу.
+    subtype = serializers.CharField(required=False, allow_null=True)
     days = serializers.ListField(
         child=serializers.DateField(), allow_empty=False,
     )
     hour_from = serializers.TimeField(required=False, allow_null=True)
     hour_to = serializers.TimeField(required=False, allow_null=True)
+    # Короткий день: длительность 'HH:MM:SS' / 'HH:MM' вместо окна часов.
+    duration = serializers.CharField(required=False, allow_null=True)
     comment = serializers.CharField(required=False, allow_blank=True, default="")
     pdf_file = serializers.FileField(required=False, allow_null=True)
     screens = serializers.ImageField(required=False, allow_null=True)

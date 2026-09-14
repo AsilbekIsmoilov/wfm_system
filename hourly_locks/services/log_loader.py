@@ -71,11 +71,15 @@ def load_logs_for_day(target_date: date) -> dict:
         "errors": 0,
     }
 
-    # Получаем расписание всех операторов на этот день
-    schedules = (
+    # Получаем расписание всех операторов на этот день.
+    # Исключённые группы (deny-list) пропускаем: логи не грузим → и долг за них
+    # не считается (WorkLogDaily не создаётся).
+    from .group_scope import exclude_operators
+    schedules = exclude_operators(
         OperatorScheduleDay.objects
         .filter(day=target_date)
-        .select_related("operator", "shift")
+        .select_related("operator", "shift"),
+        path="operator",
     )
 
     for schedule_day in schedules:

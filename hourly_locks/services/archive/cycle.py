@@ -319,6 +319,47 @@ def _cleanup_default_db(cycle: Cycle):
     """
     logger.info("[archive_cycle] Очистка default DB для цикла %s", cycle)
 
+    # Ommaviy o'chirish — har WDD uchun signal-recompute qilmaymiz (WorkDebt baribir
+    # shu yerda o'chiriladi). Aks holda minglab recompute sikl-yopishni sekinlashtiradi.
+    from hourly_locks.signals import skip_wdd_delete_recompute
+    skip_wdd_delete_recompute(True)
+    try:
+        _cleanup_default_db_inner(cycle)
+    finally:
+        skip_wdd_delete_recompute(False)
+
+
+def _prune_wfm(cycle: Cycle, comp_ids: list):
+    """
+    Сообщить WFM, что записи этого (заархивированного) цикла удалены.
+
+    Без этого они остаются в WFM НАВСЕГДА: ingest на стороне WFM — только upsert
+    (сам ничего не удаляет), а обычный reconcile в push_cycle_to_wfm скоупится на
+    АКТИВНЫЙ цикл, поэтому закрытый цикл в скоуп больше не попадает.
+
+    Передаём то, что РЕАЛЬНО осталось в Django по этому циклу (обычно пусто, но
+    transfer в pending/in_progress мог остаться) — WFM удалит всё остальное.
+    """
+    from hourly_locks.sync.runners_sync import _reconcile
+
+    _reconcile("work-debts", WorkDebt.objects.filter(cycle=cycle), cycle_id=cycle.id)
+    _reconcile("work-debt-details", WorkDebtDetail.objects.filter(cycle=cycle), cycle_id=cycle.id)
+    _reconcile("compensations", Compensation.objects.filter(cycle=cycle), cycle_id=cycle.id)
+    _reconcile("transfers", Transfer.objects.filter(cycle=cycle), cycle_id=cycle.id)
+    if comp_ids:
+        _reconcile(
+            "compensation-debt-links",
+            CompensationDebtLink.objects.filter(compensation__cycle=cycle),
+            compensation_ids=comp_ids,
+        )
+    logger.info("[archive_cycle] WFM prune yuborildi (cycle=%s)", cycle.id)
+
+
+def _cleanup_default_db_inner(cycle: Cycle):
+    # Ссылки на компенсации нужны ПОСЛЕ удаления — для скоупа WFM-reconcile по
+    # compensation-debt-links (у них нет cycle_id).
+    comp_ids = list(Compensation.objects.filter(cycle=cycle).values_list("id", flat=True))
+
     # 1. CompensationDebtLink (через каскад от Compensation, но на всякий случай)
     CompensationDebtLink.objects.filter(compensation__cycle=cycle).delete()
 
@@ -350,3 +391,7 @@ def _cleanup_default_db(cycle: Cycle):
         "[archive_cycle] Удалено: comp=%d, transfer=%d, wdd=%d, wd=%d, logs=%d",
         deleted_comp, deleted_tr, deleted_wdd, deleted_wd, deleted_logs,
     )
+
+    # Зеркалим удаление в WFM (иначе закрытый цикл останется там навсегда).
+    # _reconcile сам глотает ошибки — сбой WFM не ломает закрытие цикла.
+    _prune_wfm(cycle, comp_ids)

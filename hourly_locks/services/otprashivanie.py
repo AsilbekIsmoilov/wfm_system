@@ -141,6 +141,10 @@ def _validate_common(leave_days, hour_from, hour_to, workoff_days):
         if not cycle.contains(d):
             raise OtprashivanieError(
                 f"День отгула {d} вне активного цикла.", code="leave_out_of_cycle")
+        if d < today:
+            raise OtprashivanieError(
+                f"Заявку на прошедший день отгула ({d}) подать нельзя.",
+                code="leave_in_past")
     for d in workoff_days:
         if not cycle.contains(d):
             raise OtprashivanieError(
@@ -236,53 +240,90 @@ def preview_otprashivanie(*, operators, leave_days, hour_from, hour_to,
     }
 
 
-@transaction.atomic
-def _accept_one(operator, ctx, comment, user, source, pdf_file, screens):
-    """Создать заявку отпрашивания + связанный план отработки для одного оператора."""
+def apply_otprashivanie_effects(tr, operator, ctx, comment=None, user=None):
+    """Установить/пересоздать отгул (Transfer + OtprashivanieDay) И связанный план
+    отработки (Compensation otrabotka pending + CompensationDay). Единый источник
+    эффектов отпрашивания — приём (_accept_one) и редактирование (transfer_edit).
+    `tr` содержит operator/cycle/type_rule; связанный comp переиспользуется, если
+    уже есть (стабильный PK). Возвращает (tr, comp)."""
     cycle = ctx["cycle"]
     win = ctx["window"]
     leave_days = ctx["leave_days"]
     workoff_days = ctx["workoff_days"]
     total = win * len(leave_days)
 
-    # 1) Transfer (отгул) — статус approved (отгул разрешён)
-    tr = Transfer.objects.create(
-        operator=operator, cycle=cycle, type_rule=ctx["otpr_rule"],
-        status="approved",
-        date_from=min(leave_days), date_to=max(leave_days),
-        hour_from=ctx["hour_from"], hour_to=ctx["hour_to"],
-        requested_duration=total, verified_duration=total, remaining_debt=total,
-        comment=comment or "", pdf_file=pdf_file, screens=screens,
-        fixed_by=user,
-    )
+    # 1) отгул Transfer (status approved — отгул разрешён)
+    tr.status = "approved"
+    tr.date_from = min(leave_days)
+    tr.date_to = max(leave_days)
+    tr.hour_from = ctx["hour_from"]
+    tr.hour_to = ctx["hour_to"]
+    tr.requested_duration = total
+    tr.verified_duration = total
+    tr.remaining_debt = total
+    if comment is not None:
+        tr.comment = comment
+    tr.save()
+    tr.otprashivanie_days.all().delete()
     for d in leave_days:
         OtprashivanieDay.objects.create(
             transfer=tr, day=d, hour_from=ctx["hour_from"],
             hour_to=ctx["hour_to"], duration=win,
         )
 
-    # 2) связанный Compensation(otrabotka) — план отработки БЕЗ WDD
-    comp = Compensation.objects.create(
-        operator=operator, cycle=cycle, type_rule=ctx["otr_rule"],
-        source="system", status="pending",
-        planned_date=min(workoff_days), requested_duration=total,
-        comment=f"Отработка отпрашивания (заявка #{tr.id})",
-        debts_snapshot=[], claim_metadata={"otprashivanie_transfer_id": tr.id},
-        auto_check_result={}, fixed_by=user,
-    )
+    # 2) связанный Compensation(otrabotka) — план отработки БЕЗ WDD (pending).
+    #    Переиспользуем существующий comp при редактировании (PK стабилен).
+    comp = tr.repayment_compensation
+    if comp is None:
+        comp = Compensation(
+            operator=operator, cycle=cycle, type_rule=ctx["otr_rule"],
+            source="system", fixed_by=user,
+        )
+    comp.status = "pending"
+    comp.planned_date = min(workoff_days)
+    comp.requested_duration = total
+    # comment — tizim yozmaydi (faqat user qiymati). Otprashivanie bog'lanishi
+    # claim_metadata.otprashivanie_transfer_id'da saqlanadi.
+    comp.debts_snapshot = []
+    comp.claim_metadata = {"otprashivanie_transfer_id": tr.id}
+    comp.auto_check_result = {}
+    comp.save()
+    comp.days.all().delete()
     for d, p in zip(workoff_days, split_duration(total, len(workoff_days))):
         CompensationDay.objects.create(
             compensation=comp, day=d, allocated_duration=p, status="pending")
 
-    tr.repayment_compensation = comp
-    tr.save(update_fields=["repayment_compensation", "updated_at"])
+    if tr.repayment_compensation_id != comp.id:
+        tr.repayment_compensation = comp
+        tr.save(update_fields=["repayment_compensation", "updated_at"])
+    return tr, comp
+
+
+def revert_otprashivanie_effects(tr):
+    """Откатить эффекты отпрашивания: удалить OtprashivanieDay отгула и
+    CompensationDay связанного плана отработки. Записи tr и comp сохраняются
+    (переиспортся в apply — стабильный PK). Идемпотентно."""
+    tr.otprashivanie_days.all().delete()
+    comp = tr.repayment_compensation
+    if comp is not None:
+        comp.days.all().delete()
+
+
+@transaction.atomic
+def _accept_one(operator, ctx, comment, user, source, pdf_file, screens):
+    """Создать заявку отпрашивания + связанный план отработки для одного оператора."""
+    tr = Transfer(
+        operator=operator, cycle=ctx["cycle"], type_rule=ctx["otpr_rule"],
+        comment=comment or "", pdf_file=pdf_file, screens=screens, fixed_by=user,
+    )
+    tr, comp = apply_otprashivanie_effects(tr, operator, ctx, comment=comment, user=user)
 
     notify.notify_operator(operator, "otprashivanie_created", {
         "transfer_id": tr.id,
         "compensation_id": comp.id,
-        "total_duration": str(total),
-        "leave_days": [str(d) for d in leave_days],
-        "workoff_days": [str(d) for d in workoff_days],
+        "total_duration": str(tr.requested_duration),
+        "leave_days": [str(d) for d in ctx["leave_days"]],
+        "workoff_days": [str(d) for d in ctx["workoff_days"]],
     })
     return tr
 

@@ -101,6 +101,38 @@ def _build_defaults(spec, data):
     return out
 
 
+import logging as _logging
+_log = _logging.getLogger("wfm_sync")
+
+# WFM -> Django bu 5 entity'dan biriga POST (upsert/delete) kelsa, o'sha operatorning
+# TO'LIQ holati (operator + umumiy qarz + qarz detali + compensation + transfer)
+# WFM'ga darhol (sinxron) qayta push qilinadi (A1).
+_TRIGGER_ENTITIES = {
+    "operators", "work-debts", "work-debt-details", "compensations", "transfers",
+}
+
+
+def _operator_id_of(entity, obj):
+    if obj is None:
+        return None
+    if entity == "operators":
+        return obj.id
+    return getattr(obj, "operator_id", None)
+
+
+def _sync_operator_state(entity, operator_id):
+    """Ta'sirlangan operatorning to'liq holatini WFM'ga sinxron push. Best-effort —
+    xato bo'lsa asosiy upsert/delete javobini buzmaydi."""
+    if entity not in _TRIGGER_ENTITIES or not operator_id:
+        return
+    try:
+        from hourly_locks.services.cycle import get_active_cycle
+        from hourly_locks.sync.runners_sync import push_after_apply
+        push_after_apply([operator_id], get_active_cycle())
+    except Exception as exc:
+        _log.warning("ingest sync_operator_state(%s, op=%s) xato: %s", entity, operator_id, exc)
+
+
 class UpsertView(APIView):
     permission_classes = [HasServiceToken]
 
@@ -126,6 +158,9 @@ class UpsertView(APIView):
             return Response({"ok": False, "message": str(exc)},
                             status=http_status.HTTP_400_BAD_REQUEST)
 
+        # A1: shu operatorning to'liq holatini WFM'ga sinxron push.
+        _sync_operator_state(entity, _operator_id_of(entity, obj))
+
         return Response({"ok": True, "external_id": obj.id, "correlation_id": corr})
 
 
@@ -148,7 +183,29 @@ class DeleteView(APIView):
         elif corr and "correlation_id" in spec:
             qs = Model.objects.filter(correlation_id=corr)
 
+        # operator_id ni o'chirishdan OLDIN olamiz (keyin obj bo'lmaydi).
+        obj = qs.first() if qs is not None else None
+        op_id = _operator_id_of(entity, obj) if obj is not None else None
+
+        # Guard: заявку ОТРАБОТКИ (otrabotka) после верификации удалять нельзя —
+        # долг уже зачтён/пересчитан, удаление сломало бы учёт. Доступно только
+        # пока pending (как и редактирование). Защита на случай прямого вызова.
+        if entity == "compensations" and obj is not None:
+            tr = getattr(obj, "type_rule", None)
+            if (tr and tr.code == "otrabotka"
+                    and obj.status in {"approved", "partial", "completed"}):
+                return Response(
+                    {"ok": False, "code": "not_deletable",
+                     "message": (
+                         f"Отработку в статусе «{obj.status}» удалить нельзя "
+                         "(доступно только для «pending»).")},
+                    status=http_status.HTTP_409_CONFLICT)
+
         deleted = 0
         if qs is not None:
             deleted, _ = qs.delete()
+
+        # A1: o'zgargan operator holatini WFM'ga sinxron push.
+        _sync_operator_state(entity, op_id)
+
         return Response({"ok": True, "deleted": deleted})

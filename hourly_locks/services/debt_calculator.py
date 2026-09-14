@@ -158,6 +158,19 @@ def calculate_work_debts(for_date: date) -> dict:
       3. Пропускаем 20-08 с компенсацией (обрабатывается ночным конвейером).
       4. Для остальных — check_debt_for_log → создание WorkDebtDetail.
     """
+    # Pipeline ichida WDD create/update/delete ko'p bo'ladi; funksiya oxirida
+    # recompute_for_date baribir WorkDebt'ni BIR MARTA yangilaydi. Shuning uchun
+    # WDD-delete signal-recompute'ni o'chiramiz (takroriy hisobni oldini olish).
+    # Signal esa faqat QO'LDA (pipeline'dan tashqari) o'chirish uchun qoladi.
+    from hourly_locks.signals import skip_wdd_delete_recompute
+    skip_wdd_delete_recompute(True)
+    try:
+        return _calculate_work_debts_inner(for_date)
+    finally:
+        skip_wdd_delete_recompute(False)
+
+
+def _calculate_work_debts_inner(for_date: date) -> dict:
     cycle = get_or_create_active_cycle()
 
     if not cycle.contains(for_date):
@@ -251,9 +264,14 @@ def calculate_work_debts(for_date: date) -> dict:
         ).values_list("transfer__operator_id", flat=True)
     )
 
-    # Основной цикл
-    logs = WorkLogDaily.objects.filter(day=for_date).select_related(
-        "operator", "shift",
+    # Основной цикл. Исключённые группы (deny-list) пропускаем — защита на
+    # случай, если лог всё же есть (обычно их отсеивает уже log_loader).
+    from .group_scope import exclude_operators
+    logs = exclude_operators(
+        WorkLogDaily.objects.filter(day=for_date).select_related(
+            "operator", "shift",
+        ),
+        path="operator",
     )
     stats = {"created": 0, "skipped": 0}
 
@@ -350,37 +368,40 @@ def _create_debt_record(log: WorkLogDaily, operator: Operator, cycle):
         )
         return
 
-    # 1. Eski yozuvlarni o'chiramiz (locked emas)
-    WorkDebtDetail.objects.filter(
-        operator=operator,
-        day=log.day,
-        source="shift",
-        shift=log.shift,
-    ).delete()
-
-    # 2. Yangi qarz hisoblash
+    # 1. Yangi qarz hisoblash
     result = check_debt_for_log(log)
     debt_value = result["debt_full"] + result["debt_lock"]
 
+    # 2a. Qarz yo'q → "bu kun qarzi" entity endi mavjud emas: eski (locked bo'lmagan)
+    #     yozuvni o'chiramiz. Bu delete WFM'ga alohida sync qilinishi kerak (delete-sync).
     if debt_value <= timedelta(0):
+        WorkDebtDetail.objects.filter(
+            operator=operator, day=log.day, source="shift", shift=log.shift,
+            locked_for_compensation=False,
+        ).delete()
         return
 
-    WorkDebtDetail.objects.create(
+    # 2b. update_or_create — external_id (identity) BARQAROR qoladi.
+    #     Ilgari delete+create har run YANGI PK yasar edi → WFM upsert'da eski PK
+    #     orphan bo'lib to'planardi (bir WDD → N dublikat). Endi o'sha yozuv yangilanadi.
+    WorkDebtDetail.objects.update_or_create(
         operator=operator,
         day=log.day,
-        cycle=cycle,
         source="shift",
         shift=log.shift,
-        shift_code_snapshot=log.shift.code if log.shift else None,
-        violation_type=result["violation_type"],
-        norm_full=result["norm_full"],
-        fact_full=log.full_duration,
-        debt_full=result["debt_full"],
-        norm_lock=result["norm_lock"],
-        fact_lock=log.lock_duration,
-        debt_lock=result["debt_lock"],
-        make_up_wh=result["make_up_wh"],
-        note=result["note"],
+        defaults={
+            "cycle": cycle,
+            "shift_code_snapshot": log.shift.code if log.shift else None,
+            "violation_type": result["violation_type"],
+            "norm_full": result["norm_full"],
+            "fact_full": log.full_duration,
+            "debt_full": result["debt_full"],
+            "norm_lock": result["norm_lock"],
+            "fact_lock": log.lock_duration,
+            "debt_lock": result["debt_lock"],
+            "make_up_wh": result["make_up_wh"],
+            "note": result["note"],
+        },
     )
 
 

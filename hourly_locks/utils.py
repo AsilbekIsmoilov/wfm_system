@@ -22,11 +22,18 @@ def normalize_text(value) -> str:
 
 
 def normalize_fio_for_match(fio: str) -> str:
-    """Нормализация ФИО для сравнения с Google Sheets."""
+    """Нормализация ФИО для сравнения с Google Sheets.
+
+    Все варианты апострофа/тутук белгиси УДАЛЯЮТСЯ (o'g'li / o`g`li / oʻgʻli /
+    ogli — все становятся одинаковыми). Раньше нормализовались только фигурные
+    кавычки, но Django хранил backtick (o`g`li), а Sheets — прямой ' (o'g'li),
+    из-за чего ФИО не совпадали и график не загружался.
+    """
     if not fio:
         return ""
     fio = str(fio).lower().strip()
-    fio = fio.replace("’", "'").replace("‘", "'")
+    for ch in ("'", "`", "’", "‘", "ʻ", "ʼ", "´", "‛", "＇"):
+        fio = fio.replace(ch, "")
     fio = " ".join(fio.split())
     return fio
 
@@ -115,6 +122,26 @@ def parse_hhmmss(value: str) -> timedelta:
         return timedelta(hours=h, minutes=m, seconds=s)
     except (ValueError, AttributeError):
         return timedelta(0)
+
+
+def strip_compensation_note(note: Optional[str], comp_id: int) -> str:
+    """
+    Убрать из note WorkDebtDetail пометки «Перенесён в заявку ... #<comp_id>».
+
+    Пометка дописывается при применении заявки, а редактирование = откат +
+    повторное применение, поэтому без этой очистки каждая правка добавляла бы
+    ещё одну строку и note разрастался бы («#47» семь раз подряд).
+
+    Матчим по «#<id> (» — иначе #47 задело бы и #470.
+    """
+    if not note:
+        return ""
+    marker = f"#{comp_id} ("
+    kept = [
+        line for line in note.splitlines()
+        if not ("Перенесён в заявку" in line and marker in line)
+    ]
+    return "\n".join(kept)
 
 
 def get_system_policy(key: str, default=None):
