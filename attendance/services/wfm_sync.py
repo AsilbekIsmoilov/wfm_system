@@ -20,6 +20,7 @@ def _ser(log):
         "login_time": log.login_time.isoformat() if log.login_time else None,
         "status": log.status,
         "delay_minutes": log.delay_minutes or 0,
+        "comment": log.comment or "",
     }
 
 

@@ -19,7 +19,11 @@ class AttendanceLog(models.Model):
     login_time = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=11, choices=STATUS_CHOICES)
     delay_minutes = models.IntegerField(default=0)
+    # Комментарий супервайзера к строке оператора (на этот день). Пишется во
+    # фронте (WFM), сохраняется в WFM и синхронизируется сюда.
+    comment = models.TextField(verbose_name="Комментарий", blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ("operator", "date")
