@@ -7,6 +7,8 @@ logs/
 media/
 staticfiles/
 .env
+.env.*
+!.env.example
 creds.json
 celerybeat-schedule
 *.sqlite3
