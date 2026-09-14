@@ -39,6 +39,8 @@ build-prod:
 deploy-prod:
   extends: .deploy_template
   tags: [wfm_prod]
+  environment:
+    name: production
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
@@ -51,6 +53,8 @@ build-dev:
 deploy-dev:
   extends: .deploy_template
   tags: [wfm_dev]
+  environment:
+    name: development
   rules:
     - if: '$CI_COMMIT_BRANCH == "dev"'
 
@@ -65,6 +69,8 @@ clean-prod-db:
   stage: deploy
   image: docker:25
   tags: [wfm_prod]
+  environment:
+    name: production
   when: manual
   allow_failure: true
   rules:
