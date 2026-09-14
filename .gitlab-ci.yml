@@ -27,7 +27,11 @@ variables:
       - runner_system_failure
       - stuck_or_timeout_failure
   script:
-    - docker compose up -d --wait
+    # creds.json — Google service-account (gitignore'да, -ffdx uni o'chiradi).
+    # File-type CI/CD variable GOOGLE_CREDENTIALS dan faylga yozamiz, aks holda
+    # bind-mount bo'sh PAPKA yaratadi ("Is a directory: /app/creds.json").
+    - if [ -n "$GOOGLE_CREDENTIALS" ]; then rm -rf ./creds.json && cp "$GOOGLE_CREDENTIALS" ./creds.json; fi
+    - docker compose up -d --wait --force-recreate
     - docker image prune -f
 
 build-prod:
