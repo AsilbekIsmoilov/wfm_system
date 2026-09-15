@@ -74,9 +74,12 @@ class AttendanceCommentView(APIView):
     (latecomers). Комментарий пишется во фронте, сохраняется в WFM и
     синхронизируется сюда.
 
-    POST body: {"operator_id": <Django operator id>, "date": "YYYY-MM-DD",
-                "comment": "..."}
-    Строка AttendanceLog (operator, date) создаётся при отсутствии.
+    Дата НЕ передаётся — комментарий всегда за ТЕКУЩИЙ день. Аудит
+    (comment_created_at/by, comment_updated_at/by) проставляется автоматически:
+    `author` — имя пользователя WFM, приславшего комментарий (из JWT).
+
+    POST body: {"operator_id" | "login": ..., "comment": "...", "author": "ФИО"}
+    Строка AttendanceLog (operator, сегодня) создаётся при отсутствии.
     """
     permission_classes = [HasServiceToken]
 
@@ -84,17 +87,13 @@ class AttendanceCommentView(APIView):
         data = request.data or {}
         op_id = data.get("operator_id")
         login = data.get("login")
-        day_str = data.get("date")
         comment = data.get("comment") or ""
-        if (not op_id and not login) or not day_str:
+        author = (data.get("author") or "").strip()
+        if not op_id and not login:
             return Response(
-                {"ok": False, "message": "operator_id yoki login, va date shart"},
+                {"ok": False, "message": "operator_id yoki login shart"},
                 status=http_status.HTTP_400_BAD_REQUEST)
-        try:
-            day = _date.fromisoformat(str(day_str)[:10])
-        except ValueError:
-            return Response({"ok": False, "message": "date format: YYYY-MM-DD"},
-                            status=http_status.HTTP_400_BAD_REQUEST)
+        day = timezone.localdate()  # всегда сегодня
         if op_id:
             operator = Operator.objects.filter(id=op_id).first()
         else:
@@ -104,24 +103,32 @@ class AttendanceCommentView(APIView):
                 {"ok": False, "message": f"operator topilmadi: {op_id or login}"},
                 status=http_status.HTTP_404_NOT_FOUND)
 
+        now = timezone.now()
         log = AttendanceLog.objects.filter(operator=operator, date=day).first()
-        if log:
-            log.comment = comment
-            log.save(update_fields=["comment", "updated_at"])
-        else:
-            # Строки ещё нет (не логинился/не отмечен) — создаём, чтобы сохранить
-            # комментарий. scheduled_start берём из графика (или начало дня).
+        if not log:
+            # Строки ещё нет — создаём (scheduled_start из графика/начало дня).
             sd = (OperatorScheduleDay.objects
                   .filter(operator=operator, day=day)
                   .select_related("shift").first())
             if sd and sd.shift and sd.shift.start_time:
-                sched = timezone.make_aware(
-                    datetime.combine(day, sd.shift.start_time))
+                sched = timezone.make_aware(datetime.combine(day, sd.shift.start_time))
             else:
-                sched = timezone.make_aware(
-                    datetime.combine(day, datetime.min.time()))
-            log = AttendanceLog.objects.create(
-                operator=operator, date=day, scheduled_start=sched,
-                status="absent", comment=comment,
-            )
-        return Response({"ok": True, "id": log.id, "comment": log.comment})
+                sched = timezone.make_aware(datetime.combine(day, datetime.min.time()))
+            log = AttendanceLog(operator=operator, date=day,
+                                scheduled_start=sched, status="absent")
+
+        first_time = not log.comment_created_at  # ещё не было комментария
+        log.comment = comment
+        if first_time:
+            log.comment_created_at = now
+            log.comment_created_by = author
+        log.comment_updated_at = now
+        log.comment_updated_by = author
+        log.save()
+        return Response({
+            "ok": True, "id": log.id, "comment": log.comment,
+            "comment_created_at": log.comment_created_at,
+            "comment_created_by": log.comment_created_by,
+            "comment_updated_at": log.comment_updated_at,
+            "comment_updated_by": log.comment_updated_by,
+        })
