@@ -21,6 +21,10 @@ def _ser(log):
         "status": log.status,
         "delay_minutes": log.delay_minutes or 0,
         "comment": log.comment or "",
+        "comment_created_at": log.comment_created_at.isoformat() if log.comment_created_at else None,
+        "comment_created_by": log.comment_created_by or "",
+        "comment_updated_at": log.comment_updated_at.isoformat() if log.comment_updated_at else None,
+        "comment_updated_by": log.comment_updated_by or "",
     }
 
 

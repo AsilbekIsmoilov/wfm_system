@@ -297,6 +297,14 @@ def build_attendance(now=None):
                 "login_time": login_time,
                 "delay_minutes": log.delay_minutes if log else None,
                 "comment": log.comment if log else "",
+                "comment_created_at": (
+                    log.comment_created_at.isoformat()
+                    if log and log.comment_created_at else None),
+                "comment_created_by": log.comment_created_by if log else "",
+                "comment_updated_at": (
+                    log.comment_updated_at.isoformat()
+                    if log and log.comment_updated_at else None),
+                "comment_updated_by": log.comment_updated_by if log else "",
 
                 "group": {"id": op.group.id,
                           "name": op.group.name} if op.group else None,

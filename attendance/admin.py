@@ -12,6 +12,9 @@ class AttendanceLogAdmin(admin.ModelAdmin):
         "status",
         "delay_minutes",
         "comment",
+        "comment_created_by",
+        "comment_updated_by",
+        "comment_updated_at",
     )
 
     list_filter = (

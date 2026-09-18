@@ -89,35 +89,25 @@ def sync_operators_from_api(target_date: date, sample_hours: range = None) -> di
     created = 0
     reassigned = 0
     with transaction.atomic():
-        # (0) ПЕРЕНАЗНАЧЕНИЕ ЛОГИНА: login_id уже есть, но в API — ДРУГОЙ человек
-        #     (прежний уволен, номер выдали новому). login_id — переиспользуемый
-        #     номер, поэтому обновляем запись ПОД ТЕКУЩЕГО владельца (rename in
-        #     place): без дублей, без конфликта unique, без churn в WFM.
-        #
-        #     ВАЖНО: отличать РЕАЛЬНОЕ переназначение (другой человек) от
-        #     орфографической разницы того же ФИО (Baxtiyorovna/Baxtiyarovna,
-        #     a/o, x/h, k/q). Иначе rename на «API-написание» сломает совпадение
-        #     с Google Sheets (график ищет по ФИО) → оператор останется без
-        #     графика. Решаем по СХОЖЕСТИ нормализованных ФИО (SequenceMatcher):
-        #     низкая схожесть = другой человек → rename; высокая = та же
-        #     орфографическая вариация → НЕ трогаем (сохраняем совпадение с Sheets).
+        # (0) СИНХРОНИЗАЦИЯ ФИО ПО API: источник истины по операторам — внешний
+        #     API логов. Сопоставление оператора идёт по login_id (не по ФИО),
+        #     поэтому ФИО в БД ВСЕГДА приводим к тому, что вернул API — как для
+        #     реального переназначения логина (другой человек), так и для
+        #     орфографической правки (Xolikova→Xoliqova, a/o, k/q). Сравниваем
+        #     НОРМАЛИЗОВАННОЕ ФИО: если отличается только апострофом/регистром —
+        #     менять нечего. Схожесть (SequenceMatcher) НЕ влияет на решение,
+        #     только помечает лог: низкая = переназначение, высокая = правка.
         for login_id, op in existing_by_login.items():
             api_fio = unique_operators[login_id]
             db_fio = f"{op.surname} {op.name} {op.middle_name or ''}".strip()
             n_api = normalize_fio_for_match(api_fio)
             n_db = normalize_fio_for_match(db_fio)
             if n_api == n_db:
-                continue  # тот же человек — ничего не делаем
+                continue  # только апостроф/регистр — обновлять нечего
             similarity = SequenceMatcher(None, n_db, n_api).ratio()
-            if similarity >= REASSIGN_SIMILARITY_THRESHOLD:
-                # Орфографическая вариация того же ФИО — оставляем как есть,
-                # чтобы не порвать совпадение с Sheets.
-                logger.info(
-                    "[operator_sync] Логин %s: орфографическая вариация ФИО "
-                    "(схожесть %.2f), пропуск: «%s» ~ «%s»",
-                    login_id, similarity, db_fio, api_fio,
-                )
-                continue
+            kind = ("переназначение"
+                    if similarity < REASSIGN_SIMILARITY_THRESHOLD
+                    else "коррекция написания")
             surname, name, middle_name = _parse_fio(api_fio)
             op.surname, op.name, op.middle_name = surname, name, middle_name
             op.is_active = True
@@ -129,9 +119,8 @@ def sync_operators_from_api(target_date: date, sample_hours: range = None) -> di
                 event_type="sheets_synced",
                 level="warning",
                 message=(
-                    f"Логин переназначен: login_id={login_id} "
-                    f"«{db_fio}» → «{api_fio}» (ФИО обновлено по API). "
-                    f"Проверьте группу в админке."
+                    f"ФИО обновлено по API ({kind}): login_id={login_id} "
+                    f"«{db_fio}» → «{api_fio}»."
                 ),
                 target_type="operator",
                 payload={
@@ -139,12 +128,13 @@ def sync_operators_from_api(target_date: date, sample_hours: range = None) -> di
                     "old_fio": db_fio,
                     "new_fio": api_fio,
                     "similarity": round(similarity, 2),
-                    "reassigned_at": str(target_date),
+                    "kind": kind,
+                    "updated_at": str(target_date),
                 },
             )
             logger.warning(
-                "[operator_sync] Логин %s переназначен (схожесть %.2f): %s -> %s",
-                login_id, similarity, db_fio, api_fio,
+                "[operator_sync] Логин %s: ФИО обновлено (%s, схожесть %.2f): %s -> %s",
+                login_id, kind, similarity, db_fio, api_fio,
             )
 
         # (1) Новые логины — создаём.
